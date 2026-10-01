@@ -190,8 +190,9 @@ body { font-family: var(--font); color: var(--text); -webkit-font-smoothing: ant
 #hint {
   position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%);
   margin-top: 66px; font-size: 11px; color: var(--text-dim); z-index: 4;
-  opacity: .8; pointer-events: none;
+  opacity: .8; pointer-events: none; transition: opacity 1.2s ease;
 }
+#hint.fade { opacity: 0; }
 
 .hidden { display: none !important; }
 body.collapsed #listPanel, body.collapsed #minimapWrap { opacity: 0; pointer-events: none; transition: opacity .25s; }

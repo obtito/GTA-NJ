@@ -423,6 +423,8 @@ function buildList() {
       row.className = 'item';
       row.dataset.id = it.id;
       row.dataset.name = it.name;
+      row.dataset.en = it.en || '';
+      row.dataset.tags = (it.tags || []).join(',');
       const dot = `<span class="dot" style="background:${CAT_COLOR[it.cat] || '#888'}"></span>`;
       const hei = it.top > 3 ? `<span class="h">${Math.round(it.top * 30)}m</span>` : '';
       row.innerHTML = `${dot}<span class="nm">${it.name}</span>${hei}`;
@@ -431,6 +433,18 @@ function buildList() {
     }
   }
   $('#listCount').textContent = landmarkItems.length;
+}
+
+/** 按名称 / 英文名 / 标签过滤列表；空串恢复全部 */
+function filterList(raw) {
+  const q = raw.trim().toLowerCase();
+  document.querySelectorAll('.item').forEach((el) => {
+    const hit = !q
+      || el.dataset.name.toLowerCase().includes(q)
+      || (el.dataset.en && el.dataset.en.toLowerCase().includes(q))
+      || (el.dataset.tags && el.dataset.tags.toLowerCase().includes(q));
+    el.style.display = hit ? 'flex' : 'none';
+  });
 }
 
 function buildLegend() {
@@ -756,12 +770,14 @@ function bindUI() {
     controls.autoRotate = !controls.autoRotate;
     $('#tgSpin').classList.toggle('active', controls.autoRotate);
   });
-  $('#search').addEventListener('input', (e) => {
-    const q = e.target.value.trim().toLowerCase();
-    document.querySelectorAll('.item').forEach((el) => {
-      const hit = !q || el.dataset.name.toLowerCase().includes(q);
-      el.style.display = hit ? 'flex' : 'none';
-    });
+  // 搜索：README 承诺「按名称、英文名或标签检索」，这里三处都要匹配
+  const searchEl = $('#search');
+  searchEl.addEventListener('input', () => filterList(searchEl.value));
+  searchEl.addEventListener('keydown', (e) => {
+    // 回车直达第一个命中项，免去伸手去点列表
+    if (e.key !== 'Enter') return;
+    const first = document.querySelector('.item:not([style*="display: none"])');
+    if (first) { selectById(first.dataset.id, true); searchEl.blur(); }
   });
 
   window.addEventListener('resize', onResize);
@@ -907,8 +923,19 @@ function loop() {
   // 开场：城市由地平线生长
   grow = 0;
   flyTo(new THREE.Vector3(0, 4, 0), 420, 46, Math.PI * 0.28, 2600);
+  // ?t=22.5 直接落到指定时刻（调试夜景 / 分享带时刻的链接）
+  try {
+    const tParam = parseFloat(new URLSearchParams(location.search).get('t'));
+    if (Number.isFinite(tParam)) {
+      timeHours = clamp(tParam, 0, 24);
+      applyTime(timeHours);
+      elTimeSlider.value = timeHours;
+    }
+  } catch (e) {}
   setTimeout(() => {
     $('#loading').classList.add('done');
     selectById('zifeng', true);
   }, 700);
+  // 操作提示只在刚进入时有引导价值，读完即淡出，不长期占用底部视线
+  setTimeout(() => $('#hint').classList.add('fade'), 9000);
 })();
