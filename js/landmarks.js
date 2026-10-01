@@ -224,10 +224,11 @@ function makePagoda({ tiers, totalH, baseW, sides = 4, bodies = ['#e8e3d5', '#c9
 /* ---------------- 河流转向（桥梁自动正交过江） ---------------- */
 
 const RIVER_PTS = toV2List(RIVER.pts);
-function riverCrossBearing(x, z) {
+const EYE_BRANCH_PTS = toV2List((RIVER.branches && RIVER.branches[0] ? RIVER.branches[0] : RIVER).pts);
+function riverCrossBearing(x, z, pts = RIVER_PTS) {
   let best = Infinity, dir = [1, 0];
-  for (let i = 0; i < RIVER_PTS.length - 1; i++) {
-    const [ax, az] = RIVER_PTS[i], [bx, bz] = RIVER_PTS[i + 1];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const [ax, az] = pts[i], [bx, bz] = pts[i + 1];
     const dx = bx - ax, dz = bz - az;
     const len = Math.hypot(dx, dz) || 1;
     let t = ((x - ax) * dx + (z - az) * dz) / (len * len);
@@ -883,15 +884,17 @@ export const BUILDERS = {
     return g;
   },
 
-  /* ===== 中山陵：博爱坊—墓道—陵门—碑亭—392 级石阶—祭堂—墓室（轴线约 700 m，落差 73 m） ===== */
+  /* ===== 中山陵：博爱坊—墓道—陵门—碑亭—392 级石阶—祭堂—墓室（轴线约 720 m，落差 73 m） ===== */
   mausoleum(lm, ctx) {
     const p = lm.params;
     const g = new THREE.Group();
-    const zGate = hU(80);            // 博爱坊
-    const zLingMen = -hU(360);       // 陵门
-    const zBeiTing = -hU(430);       // 碑亭
-    const zTop = -hU(640);           // 祭堂所在第十层平台
-    const zTomb = zTop - hU(38);     // 墓室
+    // 轴原点 = 祭堂（data.js 坐标口径即祭堂），轴线向南下到博爱坊。
+    // 旧版把祭堂放在原点以北 640 m，等于整条轴线向北错位、祭堂被推到主峰脚下。
+    const zGate = hU(720);           // 博爱坊
+    const zLingMen = hU(280);        // 陵门
+    const zBeiTing = hU(210);        // 碑亭
+    const zTop = 0;                  // 祭堂所在第十层平台 = 轴原点
+    const zTomb = -hU(38);           // 墓室
 
     const gy = (zz) => terrainHeight(ctx.x, ctx.z + zz) - ctx.groundY;
     const drop = vU(p.drop);
@@ -1077,12 +1080,14 @@ export const BUILDERS = {
       new THREE.MeshStandardMaterial({ color: 0x5d7048, roughness: 1 }),
     );
     mound.scale.set(1, vU(30) / baoR, 1);
-    mound.position.set(0, yBao, zBao);
+    // 下沉 6 m：宝顶是 400 m 宽的穹顶，坡地上逐点锚定必然一侧悬空——
+    // 下沉让上坡侧多埋（不可见）、下坡侧贴住地面
+    mound.position.set(0, yBao - vU(6), zBao);
     mound.receiveShadow = true;
     g.add(mound);
     const ring = new THREE.Mesh(new THREE.TorusGeometry(baoR * 0.99, vU(p.baoChengWallH) * 0.5, 6, 60).rotateX(Math.PI / 2),
       mat('#9b9483', { rough: 0.97 }));
-    ring.position.set(0, yBao + vU(p.baoChengWallH) * 0.5, zBao);
+    ring.position.set(0, yBao - vU(6) + vU(p.baoChengWallH) * 0.5, zBao);
     g.add(ring);
     return g;
   },
@@ -1211,7 +1216,8 @@ export const BUILDERS = {
   eyebridge(lm, ctx) {
     const p = lm.params;
     const g = new THREE.Group();
-    g.rotation.y = bearingToRot(riverCrossBearing(ctx.x, ctx.z));
+    // 跨的是夹江支汊（不是长江主汊），桥轴垂直于夹江走向
+    g.rotation.y = bearingToRot(riverCrossBearing(ctx.x, ctx.z, EYE_BRANCH_PTS));
     const L = hU(p.mainBridgeL);
     const span = hU(p.span);
     const lean = (p.towerLean * Math.PI) / 180;
@@ -1229,7 +1235,7 @@ export const BUILDERS = {
       head.position.y = slant;
       tower.add(head);
       tower.rotation.z = -sz * lean;
-      tower.position.set(0, 0, tz);
+      tower.position.set(0, 0.3, tz);   // 塔根落到水面附近，而不是悬在水面之下
       g.add(tower);
       const pts = [];
       const n = 9;
@@ -1242,7 +1248,16 @@ export const BUILDERS = {
       const lg = new THREE.BufferGeometry().setFromPoints(pts);
       g.add(new THREE.LineSegments(lg, new THREE.LineBasicMaterial({ color: 0xf2f5f7, transparent: true, opacity: 0.85 })));
     }
-    for (const sz of [-1, 1]) addCyl(g, white, 0, 0, sz * (L / 2 - footU(8)), footU(9), vU(18), 12);
+    for (const sz of [-1, 1]) {
+      addCyl(g, white, 0, 0.3, sz * (L / 2 - footU(8)), footU(9), vU(18), 12);
+      // 引桥坡道：桥面在 18 m 高度，直落到两岸（旧版悬空断头）
+      const rampLen = hU(240);
+      const ramp = new THREE.Mesh(new THREE.BoxGeometry(footU(p.deckWMin + 4), 0.1, rampLen), white);
+      ramp.position.set(0, (vU(18) + 0.08) / 2, sz * (L / 2 + rampLen / 2));
+      ramp.rotation.x = sz * Math.atan2(vU(18) - 0.08, rampLen);
+      ramp.castShadow = true;
+      g.add(ramp);
+    }
     return g;
   },
 
@@ -1509,8 +1524,8 @@ function exclusionRadius(lm) {
     case 'lake': return 0;
     case 'mountainref': return 0;
     case 'wallmark': return 0;
-    case 'mausoleum': return 4.6;
-    case 'tomb': return 6.5;
+    case 'mausoleum': return 8.0;
+    case 'tomb': return 8.2;
     case 'oldtown': return 5.2;
     case 'citygate': return Math.max(hU(128) * 0.62, 3.8);
     case 'trussbridge': return 0;
@@ -1586,6 +1601,16 @@ export function buildLandmarks({ merge = true } = {}) {
     });
     const ex = exclusionRadius(lm);
     if (ex > 0) exclusions.push([x, z, ex]);
+    // 跨河桥：沿桥轴布一圈排他圆，禁止两岸楼群穿进 30 m 高的桥面/引桥
+    if (lm.model === 'trussbridge' || lm.model === 'eyebridge') {
+      const isEye = lm.model === 'eyebridge';
+      const rot = bearingToRot(riverCrossBearing(x, z, isEye ? EYE_BRANCH_PTS : RIVER_PTS));
+      const spanL = hU(lm.params.mainSpan || lm.params.mainBridgeL);
+      const half = spanL / 2 + (isEye ? 2.6 : 1.2);
+      for (let zz = -half; zz <= half; zz += 1.4) {
+        exclusions.push([x + Math.sin(rot) * zz, z + Math.cos(rot) * zz, 1.5]);
+      }
+    }
   }
   return {
     group, items, exclusions,

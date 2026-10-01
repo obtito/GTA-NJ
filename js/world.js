@@ -1,7 +1,7 @@
 // 地形：地面、山体、水面、道路、城墙
 import * as THREE from 'three';
-import { toV2, toV2List, mY, fbm, noise2, smoothPolyline, resample, distToPolyline, clamp } from './geo.js';
-import { RIVER, LAKES, ISLANDS, ROADS, MOUNTAINS, CITY_WALL } from './data.js';
+import { toV2, toV2List, mY, vU, fbm, noise2, smoothstep as smooth, smoothPolyline, resample, distToPolyline, clamp } from './geo.js';
+import { RIVER, LAKES, ISLANDS, ROADS, MOUNTAINS, CITY_WALL, LANDMARKS } from './data.js';
 import { mat, UNIT, put, ribbonGeometry, polygonGeometry, QuadBuilder, makeGroundTexture, registerEnv } from './lib.js';
 
 /* ==================== 高度场 ==================== */
@@ -16,8 +16,46 @@ const mountainInfo = MOUNTAINS.map((m, i) => {
   };
 });
 
+/* ---- 场地垫层 ----
+ * 中山陵 / 明孝陵这类「长轴线 + 大平台」的组群落在紫金山南坡上：
+ * 构件逐点锚定地形，宽平台必然局部埋没或悬空（穿模）。
+ * 垫层把圈内标高混到「按实测数据的线性坡」上——
+ * 中山陵：祭堂 158 m → 博爱坊 85 m（spec：祭堂平台海拔 158 m、落差 73 m）；
+ * 明孝陵：宝顶 105 m → 神道南端 60 m。
+ * 权重只在圆心 55% 内全量生效、向边缘 smoothstep 归零，
+ * 因此垫层与自然地形在边缘连续过渡，不会拉出断崖。 */
+const SITE_PADS = [
+  {
+    id: 'zhongshanling', r: 6.2, cz: 3.6,   // 圆心在轴线中点（祭堂南侧 360 m）
+    grad: (dzz) => vU(158) - (vU(158) - vU(85)) * (dzz / 7.2),           // dzz 相对祭堂，南正；祭堂158m→博爱坊85m
+  },
+  {
+    id: 'mingxiaoling', r: 7.6, cz: 2.75,   // 圆心在宝顶(-210m)~神道南端(+760m) 中点
+    grad: (dzz) => vU(105) - (vU(105) - vU(60)) * ((dzz + 2.1) / 9.7),   // dzz 相对方城
+  },
+].map((p) => {
+  const lm = LANDMARKS.find((l) => l.id === p.id);
+  const [x, z] = toV2(lm.lon, lm.lat);
+  return { x, z: z + p.cz, r: p.r, grad: p.grad, z0: z };
+});
+
 /** 山体影响下的地面高度（单位） */
 export function terrainHeight(x, z) {
+  for (const p of SITE_PADS) {
+    const dx = (x - p.x) / p.r, dz = (z - p.z) / p.r;
+    const r2 = dx * dx + dz * dz;
+    if (r2 >= 1) continue;
+    const r = Math.sqrt(r2);
+    // 中心权重：r<0.55 全量，之后平滑退到 0（边缘处完全等于自然地形）
+    const w = smooth(clamp((1 - r) / 0.45, 0, 1));
+    if (w <= 0) continue;
+    const grad = p.grad(z - p.z0);
+    return grad * w + terrainNatural(x, z) * (1 - w);
+  }
+  return terrainNatural(x, z);
+}
+
+function terrainNatural(x, z) {
   let h = 0;
   for (const m of mountainInfo) {
     const dx = (x - m.x) / m.rxU, dz = (z - m.z) / m.rzU;
@@ -218,7 +256,9 @@ export function buildWater(material) {
     const pos = gg.attributes.position;
     for (let i = 0; i < pos.count; i++) {
       const d = Math.hypot(pos.getX(i) - center[0], pos.getZ(i) - center[1]);
-      pos.setY(i, Math.min(1.1, 0.4 + 1.4 * Math.exp(-d * d / (12 * 12))));
+      // 江心洲/八卦洲是冲积平原岛，真实高程仅数米——旧版鼓到 33 m，
+      // 会把南京眼的西引桥整个吞进"绿丘"里
+      pos.setY(i, Math.min(0.18, 0.05 + 0.35 * Math.exp(-d * d / (12 * 12))));
     }
     gg.computeVertexNormals();
     const mi = new THREE.Mesh(gg, mat('#9fb27a', { rough: 1, side: THREE.DoubleSide }));
