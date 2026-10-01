@@ -1,0 +1,12 @@
+{
+  "name": "gta-nj",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "南京 3D 可交互城市场景 · 地标按公开实测数据精确建模",
+  "scripts": {
+    "check": "node --no-warnings --experimental-vm-modules tools/check.mjs",
+    "smoke": "npm run check && node tools/smoke.mjs",
+    "topdebug": "node tools/debugtop.mjs"
+  }
+}

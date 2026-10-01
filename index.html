@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>南京 · 3D 交互场景 ｜ GTA-NJ</title>
+  <link rel="stylesheet" href="./css/style.css" />
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "./vendor/three.module.js",
+      "three/addons/": "./vendor/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="app">
+    <canvas id="scene"></canvas>
+
+    <!-- 加载 -->
+    <div id="loading">
+      <div class="load-box">
+        <div class="load-title">南 京</div>
+        <div class="load-sub">NANJING · 3D INTERACTIVE CITY</div>
+        <div class="load-bar"><i id="loadBar"></i></div>
+        <div id="loadText" class="load-text">正在生成城市……</div>
+      </div>
+    </div>
+
+    <!-- 顶部标题 -->
+    <header id="topbar" class="panel">
+      <div class="brand">
+        <span class="brand-mark">宁</span>
+        <div class="brand-txt">
+          <h1>南京 · 3D 交互场景</h1>
+          <p id="brandSub">程序化城市 · 精细地标 · 实时昼夜</p>
+        </div>
+      </div>
+      <div class="top-actions">
+        <div id="searchWrap">
+          <input id="search" type="text" placeholder="搜索地标…" autocomplete="off" />
+        </div>
+        <button class="btn ghost" id="btnHelp" title="帮助">操作说明</button>
+        <button class="btn ghost" id="btnCollapse" title="收起面板">收起</button>
+      </div>
+    </header>
+
+    <!-- 左侧地标列表 -->
+    <aside id="listPanel" class="panel">
+      <div class="panel-head">
+        <span>地标索引</span>
+        <span id="listCount" class="chip-count">21</span>
+      </div>
+      <div id="listBody" class="list-body"></div>
+      <div class="panel-foot">
+        <div class="legend" id="legend"></div>
+      </div>
+    </aside>
+
+    <!-- 信息卡 -->
+    <section id="infoCard" class="panel hidden">
+      <button class="close" id="infoClose" aria-label="关闭">×</button>
+      <div id="infoCat" class="info-cat">现代地标</div>
+      <h2 id="infoName">紫峰大厦</h2>
+      <div id="infoEn" class="info-en">Zifeng Tower</div>
+      <div id="infoTags" class="tags"></div>
+      <div id="infoDesc" class="desc"></div>
+      <div class="sub-head">实测数据</div>
+      <table id="infoSpec" class="spec"></table>
+      <div class="sub-head">位置</div>
+      <div id="infoCoord" class="coord"></div>
+      <div class="info-actions">
+        <button class="btn primary" id="btnFly">飞抵此处</button>
+        <button class="btn ghost" id="btnOrbit">环绕浏览</button>
+      </div>
+    </section>
+
+    <!-- 底部控制条 -->
+    <div id="toolbar" class="panel">
+      <div class="grp">
+        <label class="lbl">时刻 <b id="timeVal">15:00</b></label>
+        <input id="timeSlider" type="range" min="0" max="24" step="0.1" value="15" />
+      </div>
+      <div class="grp btns">
+        <button class="btn tiny" data-time="6.5">清晨</button>
+        <button class="btn tiny" data-time="12.5">正午</button>
+        <button class="btn tiny" data-time="18.3">黄昏</button>
+        <button class="btn tiny" data-time="22.5">夜景</button>
+      </div>
+      <div class="sep"></div>
+      <div class="grp toggles">
+        <button class="btn toggle active" id="tgLabels">标签</button>
+        <button class="btn toggle active" id="tgCars">车流</button>
+        <button class="btn toggle active" id="tgShadow">阴影</button>
+        <button class="btn toggle" id="tgAuto">自动昼夜</button>
+        <button class="btn toggle" id="tgSpin">环绕</button>
+      </div>
+      <div class="sep"></div>
+      <div class="grp btns">
+        <button class="btn tiny" id="btnGrow">城市生长</button>
+        <button class="btn tiny" id="btnReset">重置视角</button>
+        <button class="btn tiny" id="btnFull">全屏</button>
+      </div>
+    </div>
+
+    <!-- 小地图 -->
+    <div id="minimapWrap" class="panel">
+      <canvas id="minimap" width="168" height="168"></canvas>
+      <div class="mm-cap">城市总览 · 点击定位</div>
+    </div>
+
+    <!-- 视图/性能 -->
+    <div id="stats" class="panel">
+      <span id="statFps">-- FPS</span>
+      <span id="statBuild">-- 建筑</span>
+      <span id="statCam">--</span>
+    </div>
+
+    <!-- 标签层 -->
+    <div id="labels"></div>
+
+    <!-- 帮助 -->
+    <div id="help" class="panel hidden">
+      <button class="close" id="helpClose" aria-label="关闭">×</button>
+      <h3>操作说明</h3>
+      <ul>
+        <li><b>左键拖拽</b> 旋转视角</li>
+        <li><b>滚轮 / 双指</b> 缩放</li>
+        <li><b>右键拖拽</b> 平移</li>
+        <li><b>点击地标或标签</b> 查看实测数据</li>
+        <li><b>点击小地图</b> 快速定位</li>
+      </ul>
+      <div class="sub-head">尺度说明</div>
+      <p class="note">水平 1 单位 = 100 m（真实地理比例）；竖向 1 单位 = 30 m（统一 3.33 倍夸张）。地标按实测尺寸建造，单体长宽比保持真实；街区为程序化生成示意。</p>
+    </div>
+
+    <div id="hint">左键拖拽旋转 · 滚轮缩放 · 右键平移 · 点击地标查看实测数据</div>
+  </div>
+
+  <script type="module" src="./js/main.js"></script>
+</body>
+</html>

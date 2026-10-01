@@ -1,0 +1,850 @@
+// 南京 3D 交互场景 · 主程序
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/OrbitControls.js';
+import { Sky } from 'three/addons/Sky.js';
+import {
+  buildGround, buildMountains, createWaterMaterial, buildWater,
+  buildRoads, buildWall, terrainHeight,
+} from './world.js';
+import { buildCity, buildTrees, buildCars, districtGridLines } from './city.js';
+import { buildLandmarks } from './landmarks.js';
+import { createEnvironment } from './environment.js';
+import { collectOccluders, bakeCityAmbient, applyCityAmbient, setCityAmbientDirect } from './ambient.js';
+import { setEnvIntensity } from './lib.js';
+import { CATEGORIES, DISTRICTS, RIVER, CITY_WALL } from './data.js';
+import { toV2, toV2List, clamp, lerp, sunState, easeInOutCubic } from './geo.js';
+
+/* ==================== DOM ==================== */
+const $ = (s) => document.querySelector(s);
+const canvas = $('#scene');
+const loadBar = $('#loadBar');
+const loadText = $('#loadText');
+
+const CAT_COLOR = {};
+for (const c of CATEGORIES) CAT_COLOR[c.key] = c.color;
+
+/* ==================== 渲染器 / 场景 ==================== */
+let renderer, scene, camera, controls, sky, sunLight, hemi, ambient, waterMat;
+let city, trees, cars, roads, waterGroup;
+let env = null;                       // 共享 HDR 环境（PMREM）
+let landmarkItems = [];
+let labelEls = [];
+let grow = 1, autoTime = false, timeHours = 15;
+let activeId = null;
+let anim = null;
+// 待注入城市 AO 的材质，按表面类型分组
+const aoTargets = { ground: [], wall: [], roof: [] };
+let aoInfo = null;
+const clock = new THREE.Clock();
+
+function initRenderer() {
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
+  // 起步不得超过 RES_BASE（自适应 ladder 的 1.0 档），见 applyResolution()
+  renderer.setPixelRatio(RES_BASE);
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 0.68;
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+  scene = new THREE.Scene();
+  scene.fog = new THREE.Fog(0xd8e4ee, 320, 1100);
+
+  camera = new THREE.PerspectiveCamera(46, window.innerWidth / window.innerHeight, 0.5, 4000);
+  camera.position.set(120, 130, 190);
+
+  controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.06;
+  controls.maxPolarAngle = Math.PI * 0.495;
+  controls.minDistance = 4;
+  controls.maxDistance = 900;
+  controls.target.set(0, 2, 0);
+  controls.autoRotateSpeed = 0.32;
+  controls.update();
+
+  // 天空
+  sky = new Sky();
+  sky.scale.setScalar(12000);
+  const u = sky.material.uniforms;
+  u.turbidity.value = 6;
+  u.rayleigh.value = 1.4;
+  u.mieCoefficient.value = 0.006;
+  u.mieDirectionalG.value = 0.82;
+  // Sky 是整屏的 Preetham 大气积分（十几次 pow/exp），是最贵的一层。
+  // 它的顶点着色器把 z 推到远平面（gl_Position.z = gl_Position.w），
+  // 所以把它排到最后绘制时，被地形楼群盖住的像素会在深度测试阶段直接被剔掉 ——
+  // 否则它排在队列最前、整屏无谓跑一遍，航拍视角下等于白烧一半 GPU。
+  sky.renderOrder = 1000;
+  scene.add(sky);
+
+  hemi = new THREE.HemisphereLight(0xcfe3f2, 0x6f7259, 0.7);
+  scene.add(hemi);
+  ambient = new THREE.AmbientLight(0xffffff, 0.22);
+  scene.add(ambient);
+
+  sunLight = new THREE.DirectionalLight(0xfff3e0, 2.6);
+  sunLight.castShadow = true;
+  sunLight.shadow.mapSize.set(2048, 2048);
+  // 视锥半幅 / near / far / bias 每帧按焦点距离重算，见 updateShadowFocus()
+  sunLight.shadow.camera.near = 1;
+  sunLight.shadow.camera.far = 1400;
+  scene.add(sunLight);
+  scene.add(sunLight.target);
+
+  // 共享 HDR 环境：程序化天空 -> PMREM，供玻璃幕墙、车漆等地物的 PBR 反射使用
+  env = createEnvironment(renderer);
+}
+
+/* ==================== 昼夜 ==================== */
+const sunDir = new THREE.Vector3();
+const skyColor = new THREE.Color();
+const horizonColor = new THREE.Color();
+const zenithColor = new THREE.Color();
+
+// 共享环境的重烘焙（PMREM）要几十毫秒，不能跟着时间轴逐帧跑：
+// applyTime 只登记 envPending，由主循环按「冷却 + 停手」两个条件触发。
+let envPending = null;
+let lastEnvMs = -1e9;
+let lastEnvHours = -1e9;
+let lastTimeChangeMs = 0;
+let envReady = false;
+
+function applyEnv(hours) {
+  if (!env) { envPending = null; return; }
+  lastEnvMs = performance.now();
+  const tex = env.update(hours);
+  if (tex) { scene.environment = tex; envReady = true; }
+  applyEnvCompensation(hours);
+}
+
+/** 有了 IBL 之后，半球光/环境光退为补色：再叠满会与天空辐射重复补光、把画面冲淡 */
+function applyEnvCompensation(hours) {
+  const s = sunState(hours);
+  const fill = envReady ? 0.58 : 1;
+  hemi.intensity = lerp(0.26, 0.72, s.day) * fill;
+  ambient.intensity = lerp(0.10, 0.26, s.day) * fill;
+  setEnvIntensity(lerp(0.45, 1.0, Math.max(s.day, s.dusk * 0.6)));
+}
+
+function applyTime(hours) {
+  timeHours = hours;
+  // 太阳状态唯一来源：实时平行光、共享环境烘焙、水面高光全部读同一份
+  const s = sunState(hours);
+  const { day, night, dusk } = s;
+  sunDir.set(s.dir.x, s.dir.y, s.dir.z);
+  sky.material.uniforms.sunPosition.value.copy(sunDir);
+  sky.material.uniforms.turbidity.value = lerp(3.2, 8.5, dusk);
+  sky.material.uniforms.rayleigh.value = lerp(0.8, 2.4, dusk);
+
+  // 共享 HDR 环境交给 applyEnv() 节流执行，这里只登记待办
+  envPending = hours;
+  lastTimeChangeMs = performance.now();
+  applyEnvCompensation(hours);
+
+  sunLight.intensity = lerp(0.05, 2.9, Math.pow(day, 0.7));
+  sunLight.color.setHSL(lerp(0.07, 0.13, day), lerp(0.55, 0.12, day), lerp(0.5, 0.75, day));
+  hemi.color.setHSL(0.58, lerp(0.35, 0.42, day), lerp(0.22, 0.72, day + 0.15));
+  hemi.groundColor.setHSL(0.18, 0.18, lerp(0.10, 0.28, day));
+
+  // 天空/雾颜色近似
+  skyColor.setHSL(0.58, lerp(0.35, 0.45, dusk), lerp(0.10, 0.78, day));
+  scene.fog.color.copy(skyColor);
+  renderer.toneMappingExposure = lerp(0.52, 0.72, day);
+
+  if (waterMat) {
+    // 水面反射与 PBR 共用同一片天空：地平线取雾色提亮，天顶取更深的蓝
+    horizonColor.copy(skyColor).offsetHSL(0, -0.04, 0.07);
+    zenithColor.setHSL(0.60, lerp(0.30, 0.55, day), lerp(0.08, 0.40, day));
+    waterMat.uniforms.uSunDir.value.copy(sunDir);
+    waterMat.uniforms.uNight.value = night;
+    waterMat.uniforms.uSky.value.copy(skyColor);
+    waterMat.uniforms.uHorizon.value.copy(horizonColor);
+    waterMat.uniforms.uZenith.value.copy(zenithColor);
+    waterMat.uniforms.uSunI.value = lerp(0.04, 1.0, Math.pow(day, 0.7));
+  }
+  if (city) city.setNight(night);
+  if (cars) cars.setNight(Math.max(night, dusk * 0.4));
+  if (roads) roads.glow.material.opacity = clamp(night * 0.55 + dusk * 0.18, 0, 0.7);
+  if (landmarkItems) for (const it of landmarkItems) it.setNight && it.setNight(night);   // 地标夜景（窗光/冠缘发光）
+
+  // 城市 AO 施加到直射光的份额：白天 0.30 / 黄昏 0.24 / 夜间 0（夜间只剩灯光，别再压暗）
+  setCityAmbientDirect((1 - night) * lerp(0.30, 0.24, dusk));
+
+  const hh = Math.floor(hours);
+  const mm = Math.floor((hours - hh) * 60);
+  $('#timeVal').textContent = `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+}
+
+/* ==================== 阴影契约：焦点距离驱动 ==================== */
+// GTA_SZ 的经验：太阳阴影只在 shadow box 内生效，box 固定就必然在街景下过粗、航拍下不够。
+// 这里让视锥半幅跟随「相机到焦点的距离」：贴地看时收到几十米，俯瞰全城时放宽到数百米，
+// 同时 bias / normalBias 随 texel 的世界尺寸缩放，避免缩放过程中出现闪烁的自阴影条纹。
+const shadowState = { d: 0 };
+function updateShadowFocus() {
+  if (!sunLight) return;
+  const focus = controls.target;
+  const dist = camera.position.distanceTo(focus);
+  const d = clamp(dist * 0.62 + 24, 26, 240);
+
+  sunLight.target.position.copy(focus);
+  sunLight.target.updateMatrixWorld();
+  sunLight.position.copy(focus).addScaledVector(sunDir, 600);
+
+  if (Math.abs(d - shadowState.d) > shadowState.d * 0.05 || shadowState.d === 0) {
+    shadowState.d = d;
+    const cam = sunLight.shadow.camera;
+    cam.left = -d; cam.right = d; cam.top = d; cam.bottom = -d;
+    cam.updateProjectionMatrix();
+    const texel = (2 * d) / sunLight.shadow.mapSize.x;   // 一个阴影 texel 覆盖多少场景单位
+    sunLight.shadow.bias = -0.0004 - texel * 0.0016;
+    sunLight.shadow.normalBias = clamp(texel * 2.2, 0.12, 0.9);
+  }
+}
+
+/* ==================== 构建流程 ==================== */
+async function build() {
+  const marks = [];
+  const total = 8;
+  const step = async (label, fn, pct) => {
+    loadText.textContent = label + '……';
+    loadBar.style.width = pct + '%';
+    await new Promise((r) => setTimeout(r, 30));
+    const out = fn();
+    marks.push(label);
+    return out;
+  };
+
+  await step('初始化渲染器', initRenderer, 8);
+  await step('生成地形与山体', () => {
+    const g = buildGround();
+    scene.add(g.mesh);
+    aoTargets.ground.push(g.mat);
+    const mo = buildMountains();
+    scene.add(mo.group);
+  }, 22);
+  await step('铺设长江与湖泊', () => {
+    waterMat = createWaterMaterial();
+    waterGroup = buildWater(waterMat);
+    scene.add(waterGroup);
+  }, 36);
+  await step('砌筑明城墙', () => {
+    const w = buildWall();
+    scene.add(w.group);
+    aoTargets.wall.push(...w.mats);
+  }, 46);
+  const lm = await step('复刻精细地标', () => {
+    const r = buildLandmarks();
+    scene.add(r.group);
+    return r;
+  }, 62);
+
+  landmarkItems = lm.items;
+  for (const it of landmarkItems) {
+    const stack = [it.group];
+    while (stack.length) {
+      const n = stack.pop();
+      n.userData.lid = it.id;
+      for (const c of n.children || []) stack.push(c);
+    }
+  }
+
+  await step('生成城市街区路网', () => {
+    const grid = districtGridLines();
+    roads = buildRoads(grid);
+    scene.add(roads.mesh);
+    scene.add(roads.glow);
+    aoTargets.ground.push(...roads.mats);
+    return grid;
+  }, 72);
+
+  await step('生长楼群与行道树', () => {
+    city = buildCity({ exclusions: lm.exclusions });
+    scene.add(city.group);
+    city.setGrowth(0);
+    aoTargets.wall.push(...city.mats.wall, ...city.mats.misc);
+    aoTargets.roof.push(...city.mats.roof);
+
+    const t = buildTrees({ exclusions: lm.exclusions });
+    trees = t.group;
+    scene.add(trees);
+    aoTargets.wall.push(...t.mats);
+
+    cars = buildCars(roads.centerlines, 120);
+    scene.add(cars.group);
+    aoTargets.ground.push(...cars.mats);   // 车在街谷底部，吃最重的遮蔽
+  }, 88);
+
+  await step('烘焙城市环境光遮蔽', () => {
+    // 地标也参与遮挡：塔楼脚下、城门洞、巷子里的明暗差靠这张场
+    const seen = new Set();
+    lm.group.traverse((o) => {
+      if (!o.isMesh || !o.material) return;
+      for (const m of Array.isArray(o.material) ? o.material : [o.material]) {
+        if (m && m.isMeshStandardMaterial && !seen.has(m)) { seen.add(m); aoTargets.wall.push(m); }
+      }
+    });
+
+    const occ = collectOccluders(city, landmarkItems);
+    // 先注入（登记材质），再烘焙 —— 烘焙结束会统一置 needsUpdate 触发重编译
+    for (const surface of Object.keys(aoTargets)) {
+      for (const m of aoTargets[surface]) applyCityAmbient(m, surface);
+    }
+    aoInfo = bakeCityAmbient(occ);
+    return aoInfo;
+  }, 96);
+
+  await step('点亮万家灯火', () => {
+    applyTime(15);
+    buildLabels();
+    buildList();
+    buildLegend();
+    buildPickProxies();
+  }, 100);
+
+  $('#statBuild').textContent = `${city.count.toLocaleString()} 建筑 · ${landmarkItems.length} 地标`;
+  console.log('[GTA-NJ] 构建完成 · 阶段：', marks.join(' / '));
+  console.log('[GTA-NJ] 城市 AO：', aoInfo ? `${aoInfo.width}×${aoInfo.height}, 有效单元 ${aoInfo.activeCells}, 平均天空可见度 ${aoInfo.meanVisibility.toFixed(3)}` : '未生成');
+  console.log(
+    '[GTA-NJ] 地标合批：', lm.merged ? `${lm.merged.before} → ${lm.merged.after} mesh` : '未启用',
+    ' · 拾取代理', pickProxies.length, '个',
+  );
+}
+
+/* ==================== 标签 ==================== */
+function buildLabels() {
+  const layer = $('#labels');
+  layer.innerHTML = '';
+  labelEls = landmarkItems.map((it) => {
+    const el = document.createElement('div');
+    el.className = 'label';
+    el.innerHTML = `<b>${it.name}</b>`;
+    el.dataset.id = it.id;
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      selectById(it.id, true);
+    });
+    layer.appendChild(el);
+    // last 缓存上一次写进 DOM 的值：只有真的变了才写回。
+    // 22 个标签 × 每帧 3 处样式写入，足以把主线程拖出强制重排。
+    return { el, item: it, last: { on: null, x: NaN, y: NaN, dim: null, act: null } };
+  });
+}
+
+const tmpV = new THREE.Vector3();
+let vw = window.innerWidth, vh = window.innerHeight;   // 缓存视口，避免每帧读 window 触发重排
+function updateLabels() {
+  const camDist = camera.position.distanceTo(controls.target);
+  for (const { el, item, last } of labelEls) {
+    tmpV.copy(item.pos);
+    tmpV.y += item.labelY;
+    const dist = tmpV.distanceTo(camera.position);
+    tmpV.project(camera);
+    const behind = tmpV.z > 1;
+    const x = (tmpV.x * 0.5 + 0.5) * vw;
+    const y = (-tmpV.y * 0.5 + 0.5) * vh;
+    const on = !behind && x > -80 && x < vw + 80 && y > -40 && y < vh + 40 && dist < 900;
+    if (on !== last.on) { el.style.display = on ? 'block' : 'none'; last.on = on; }
+    if (!on) continue;
+    if (!(Math.abs(x - last.x) < 0.5 && Math.abs(y - last.y) < 0.5)) {
+      last.x = x; last.y = y;
+      el.style.transform = `translate(-50%, -100%) translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`;
+    }
+    const dim = dist >= camDist * 1.1;
+    if (dim !== last.dim) { el.classList.toggle('dim', dim); last.dim = dim; }
+    const act = item.id === activeId;
+    if (act !== last.act) { el.classList.toggle('active', act); last.act = act; }
+  }
+}
+
+/* ==================== 地标列表 ==================== */
+function buildList() {
+  const body = $('#listBody');
+  body.innerHTML = '';
+  const groups = {};
+  for (const it of landmarkItems) (groups[it.cat] = groups[it.cat] || []).push(it);
+  for (const cat of Object.keys(groups)) {
+    const t = document.createElement('div');
+    t.className = 'cat-title';
+    t.textContent = cat;
+    body.appendChild(t);
+    for (const it of groups[cat]) {
+      const row = document.createElement('div');
+      row.className = 'item';
+      row.dataset.id = it.id;
+      row.dataset.name = it.name;
+      const dot = `<span class="dot" style="background:${CAT_COLOR[it.cat] || '#888'}"></span>`;
+      const hei = it.top > 3 ? `<span class="h">${Math.round(it.top * 30)}m</span>` : '';
+      row.innerHTML = `${dot}<span class="nm">${it.name}</span>${hei}`;
+      row.addEventListener('click', () => selectById(it.id, true));
+      body.appendChild(row);
+    }
+  }
+  $('#listCount').textContent = landmarkItems.length;
+}
+
+function buildLegend() {
+  const el = $('#legend');
+  el.innerHTML = CATEGORIES
+    .filter((c) => landmarkItems.some((i) => i.cat === c.key))
+    .map((c) => `<span><i style="background:${c.color}"></i>${c.key}</span>`)
+    .join('');
+}
+
+/* ==================== 信息卡 ==================== */
+function showInfo(it) {
+  const card = $('#infoCard');
+  $('#infoCat').textContent = it.cat;
+  $('#infoName').textContent = it.name;
+  $('#infoEn').textContent = it.en || '';
+  $('#infoTags').innerHTML = (it.tags || []).map((t) => `<i>${t}</i>`).join('');
+  $('#infoDesc').textContent = it.desc || '';
+  $('#infoSpec').innerHTML = (it.spec || []).map(([k, v]) => `<tr><td>${k}</td><td>${v}</td></tr>`).join('');
+  $('#infoCoord').textContent = `${it.lat.toFixed(4)}° N, ${it.lon.toFixed(4)}° E`;
+  card.classList.remove('hidden');
+}
+
+function selectById(id, fly = true) {
+  const it = landmarkItems.find((i) => i.id === id);
+  if (!it) return;
+  activeId = id;
+  showInfo(it);
+  document.querySelectorAll('.item.active').forEach((e) => e.classList.remove('active'));
+  const row = document.querySelector(`.item[data-id="${id}"]`);
+  if (row) {
+    row.classList.add('active');
+    row.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+  if (fly) {
+    const dist = clamp(it.top * 3.2 + 16, 22, 120);
+    flyTo(it.pos.clone().setY(it.pos.y + it.top * 0.45), dist, 62, (Math.random() * 40 - 20 + 25) * Math.PI / 180);
+  }
+}
+
+/* ==================== 相机飞行 ==================== */
+function flyTo(targetPos, dist, polarDeg, azimuthRad, dur = 1500) {
+  const now = performance.now();
+  const off = camera.position.clone().sub(controls.target);
+  const sph0 = new THREE.Spherical().setFromVector3(off);
+  const sph1 = new THREE.Spherical(dist, THREE.MathUtils.degToRad(clamp(polarDeg, 5, 88)), azimuthRad);
+  // 取最短角路径
+  let da = sph1.theta - sph0.theta;
+  while (da > Math.PI) da -= Math.PI * 2;
+  while (da < -Math.PI) da += Math.PI * 2;
+  anim = {
+    t0: now, dur, sph0, sph1, da,
+    from: controls.target.clone(), to: targetPos.clone(),
+  };
+  controls.autoRotate = false;
+  $('#tgSpin').classList.remove('active');
+}
+
+function updateAnim() {
+  if (!anim) return false;
+  const t = clamp((performance.now() - anim.t0) / anim.dur, 0, 1);
+  const e = easeInOutCubic(t);
+  const r = lerp(anim.sph0.radius, anim.sph1.radius, e);
+  const p = lerp(anim.sph0.phi, anim.sph1.phi, e);
+  const a = anim.sph0.theta + anim.da * e;
+  const tgt = anim.from.clone().lerp(anim.to, e);
+  const off = new THREE.Vector3().setFromSpherical(new THREE.Spherical(r, p, a));
+  camera.position.copy(tgt).add(off);
+  controls.target.copy(tgt);
+  if (t >= 1) anim = null;
+  return true;
+}
+
+/* ==================== 拾取 ==================== */
+// 直接对几百个地标 mesh 做 raycast，鼠标每移动一次就要测试数万个三角形，是最容易被忽略的卡顿源。
+// 因此每个地标生成一个不参与渲染的包围盒代理：
+//   · 悬停（决定光标样式）只用代理，22 次盒测试即可
+//   · 点击先用代理粗筛，再对命中的那一个地标做精确 raycast，保证选中不糊
+const ray = new THREE.Raycaster();
+const ndc = new THREE.Vector2();
+let down = null;
+const pickProxies = [];        // { mesh, id, meshes: [] }
+const proxyMeshes = [];        // 缓存 flat 列表，避免每次悬停都新建数组
+const proxyMat = new THREE.MeshBasicMaterial();
+
+function setRay(ev) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  ndc.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+  ndc.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+  ray.setFromCamera(ndc, camera);
+}
+
+function buildPickProxies() {
+  pickProxies.length = 0;
+  proxyMeshes.length = 0;
+  for (const it of landmarkItems) {
+    const box = new THREE.Box3().setFromObject(it.group);
+    if (!Number.isFinite(box.min.x) || box.isEmpty()) continue;
+    const size = box.getSize(new THREE.Vector3());
+    const center = box.getCenter(new THREE.Vector3());
+    // 略微收进一点点，避免相邻地标的代理互相重叠导致误判
+    const proxy = new THREE.Mesh(new THREE.BoxGeometry(size.x, size.y, size.z), proxyMat);
+    proxy.position.copy(center);
+    proxy.visible = false;      // 不渲染；three 的 raycast 不看 visible，仍会被命中
+    proxy.updateMatrixWorld();
+    proxy.userData.lid = it.id;
+    scene.add(proxy);
+    const meshes = [];
+    it.group.traverse((o) => { if (o.isMesh) meshes.push(o); });
+    pickProxies.push({ mesh: proxy, id: it.id, meshes });
+    proxyMeshes.push(proxy);
+  }
+}
+
+/** 粗拾取：只打代理盒，返回地标 id 与其精确 mesh 列表 */
+function pickCoarse(ev) {
+  setRay(ev);
+  const hits = ray.intersectObjects(proxyMeshes, false);
+  if (!hits.length) return null;
+  return pickProxies.find((p) => p.mesh === hits[0].object) || null;
+}
+
+function pick(ev) {
+  const coarse = pickCoarse(ev);
+  if (!coarse) return null;
+  if (!coarse.meshes.length) return coarse.id;
+  const hits = ray.intersectObjects(coarse.meshes, false);
+  return hits.length ? coarse.id : null;   // 点在代理盒空隙里就不算选中
+}
+
+function pickHover(ev) {
+  const coarse = pickCoarse(ev);
+  return coarse ? coarse.id : null;
+}
+
+canvas.addEventListener('pointerdown', (e) => { down = { x: e.clientX, y: e.clientY, t: performance.now() }; });
+canvas.addEventListener('pointerup', (e) => {
+  if (!down) return;
+  const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
+  const dt = performance.now() - down.t;
+  down = null;
+  if (moved > 6 || dt > 500) return;
+  const id = pick(e);
+  if (id) selectById(id, true);
+  else {
+    activeId = null;
+    $('#infoCard').classList.add('hidden');
+    document.querySelectorAll('.item.active').forEach((el) => el.classList.remove('active'));
+  }
+});
+let hoverPending = null;
+canvas.addEventListener('pointermove', (e) => {
+  if (down) return;
+  hoverPending = e;   // 到下一帧再算，避免一次移动里多次 pointermove 反复 raycast
+});
+function flushHover() {
+  if (!hoverPending) return;
+  const e = hoverPending;
+  hoverPending = null;
+  canvas.style.cursor = pickHover(e) ? 'pointer' : 'grab';
+}
+
+/* ==================== 小地图 ==================== */
+const mm = $('#minimap');
+const mctx = mm.getContext('2d');
+const MM_EXT = 150; // 场景单位半幅
+const RIVER_PTS = toV2List(RIVER.pts);
+const WALL_PTS = toV2List(CITY_WALL);
+
+const mm2px = (p) => [
+  ((p[0] + MM_EXT) / (MM_EXT * 2)) * mm.width,
+  ((p[1] + MM_EXT) / (MM_EXT * 2)) * mm.height,
+];
+const px2mm = (x, y) => [
+  (x / mm.width) * MM_EXT * 2 - MM_EXT,
+  (y / mm.height) * MM_EXT * 2 - MM_EXT,
+];
+
+function drawMinimap() {
+  const w = mm.width, h = mm.height;
+  mctx.clearRect(0, 0, w, h);
+  mctx.fillStyle = '#eef1f3';
+  mctx.fillRect(0, 0, w, h);
+
+  // 片区
+  mctx.fillStyle = 'rgba(150,165,150,.22)';
+  for (const d of DISTRICTS) {
+    const c = toV2(d.lon, d.lat);
+    const px = mm2px(c);
+    mctx.save();
+    mctx.translate(px[0], px[1]);
+    mctx.rotate(-(d.rot * Math.PI) / 180);
+    mctx.fillRect(-((d.w * 10) / (MM_EXT * 2)) * w / 2, -((d.d * 10) / (MM_EXT * 2)) * h / 2,
+      ((d.w * 10) / (MM_EXT * 2)) * w, ((d.d * 10) / (MM_EXT * 2)) * h);
+    mctx.restore();
+  }
+
+  // 长江
+  mctx.strokeStyle = '#5c9bc0';
+  mctx.lineWidth = 5;
+  mctx.lineJoin = 'round';
+  mctx.beginPath();
+  RIVER_PTS.forEach((p, i) => {
+    const q = mm2px(p);
+    if (i === 0) mctx.moveTo(q[0], q[1]); else mctx.lineTo(q[0], q[1]);
+  });
+  mctx.stroke();
+
+  // 城墙
+  mctx.strokeStyle = 'rgba(150,120,90,.85)';
+  mctx.lineWidth = 1.2;
+  mctx.beginPath();
+  WALL_PTS.forEach((p, i) => {
+    const q = mm2px(p);
+    if (i === 0) mctx.moveTo(q[0], q[1]); else mctx.lineTo(q[0], q[1]);
+  });
+  mctx.closePath();
+  mctx.stroke();
+
+  // 地标
+  for (const it of landmarkItems) {
+    const q = mm2px([it.pos.x, it.pos.z]);
+    mctx.fillStyle = CAT_COLOR[it.cat] || '#666';
+    mctx.beginPath();
+    mctx.arc(q[0], q[1], it.id === activeId ? 3.6 : 2, 0, Math.PI * 2);
+    mctx.fill();
+    if (it.id === activeId) {
+      mctx.strokeStyle = '#fff';
+      mctx.lineWidth = 1.2;
+      mctx.stroke();
+    }
+  }
+
+  // 相机
+  const cq = mm2px([camera.position.x, camera.position.z]);
+  const tq = mm2px([controls.target.x, controls.target.z]);
+  const ang = Math.atan2(tq[1] - cq[1], tq[0] - cq[0]);
+  mctx.fillStyle = 'rgba(192,69,47,.16)';
+  mctx.beginPath();
+  mctx.moveTo(cq[0], cq[1]);
+  mctx.arc(cq[0], cq[1], 22, ang - 0.5, ang + 0.5);
+  mctx.closePath();
+  mctx.fill();
+  mctx.fillStyle = '#c0452f';
+  mctx.beginPath();
+  mctx.arc(cq[0], cq[1], 3, 0, Math.PI * 2);
+  mctx.fill();
+}
+
+mm.addEventListener('click', (e) => {
+  const r = mm.getBoundingClientRect();
+  const [x, z] = px2mm(e.clientX - r.left, e.clientY - r.top);
+  const off = camera.position.clone().sub(controls.target);
+  const y = Math.max(3, terrainHeight(x, z));
+  flyTo(new THREE.Vector3(x, y, z), clamp(off.length() * 0.55, 25, 220), 58, Math.atan2(off.x, off.z));
+});
+
+/* ==================== UI ==================== */
+function bindUI() {
+  const slider = $('#timeSlider');
+  slider.addEventListener('input', () => {
+    autoTime = false;
+    $('#tgAuto').classList.remove('active');
+    applyTime(parseFloat(slider.value));
+  });
+  document.querySelectorAll('[data-time]').forEach((b) => {
+    b.addEventListener('click', () => {
+      autoTime = false;
+      $('#tgAuto').classList.remove('active');
+      const v = parseFloat(b.dataset.time);
+      slider.value = v;
+      applyTime(v);
+    });
+  });
+
+  const toggle = (id, fn) => {
+    const el = $(id);
+    el.addEventListener('click', () => {
+      const on = !el.classList.contains('active');
+      el.classList.toggle('active', on);
+      fn(on);
+    });
+  };
+  toggle('#tgLabels', (on) => {
+    $('#labels').style.display = on ? 'block' : 'none';
+  });
+  toggle('#tgCars', (on) => { cars.group.visible = on; });
+  toggle('#tgShadow', (on) => { renderer.shadowMap.enabled = on; scene.traverse((o) => { if (o.isMesh && o.material) o.material.needsUpdate = true; }); });
+  toggle('#tgAuto', (on) => { autoTime = on; });
+  toggle('#tgSpin', (on) => { controls.autoRotate = on; });
+
+  $('#btnGrow').addEventListener('click', () => { grow = 0; });
+  $('#btnReset').addEventListener('click', () => {
+    activeId = null;
+    $('#infoCard').classList.add('hidden');
+    flyTo(new THREE.Vector3(0, 4, 0), 330, 55, Math.PI * 0.28, 1600);
+  });
+  $('#btnFull').addEventListener('click', () => {
+    if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+    else document.exitFullscreen();
+  });
+  $('#btnCollapse').addEventListener('click', () => document.body.classList.toggle('collapsed'));
+  $('#btnHelp').addEventListener('click', () => $('#help').classList.toggle('hidden'));
+  $('#helpClose').addEventListener('click', () => $('#help').classList.add('hidden'));
+  $('#infoClose').addEventListener('click', () => $('#infoCard').classList.add('hidden'));
+  $('#btnFly').addEventListener('click', () => { if (activeId) selectById(activeId, true); });
+  $('#btnOrbit').addEventListener('click', () => {
+    controls.autoRotate = !controls.autoRotate;
+    $('#tgSpin').classList.toggle('active', controls.autoRotate);
+  });
+  $('#search').addEventListener('input', (e) => {
+    const q = e.target.value.trim().toLowerCase();
+    document.querySelectorAll('.item').forEach((el) => {
+      const hit = !q || el.dataset.name.toLowerCase().includes(q);
+      el.style.display = hit ? 'flex' : 'none';
+    });
+  });
+
+  window.addEventListener('resize', onResize);
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      $('#infoCard').classList.add('hidden');
+      $('#help').classList.add('hidden');
+    }
+  });
+}
+
+function onResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  vw = window.innerWidth; vh = window.innerHeight;
+  drawMinimap();
+}
+
+/* ==================== 自适应分辨率 ==================== */
+// 兜底策略：帧率持续偏低就下调渲染倍率，恢复后再逐步升回来。
+// 与其让用户在低帧率里卡着操作，不如牺牲一点锐度换取流畅。
+// 倍率 ladder 作用在「基准 DPR」之上，而不是直接等于 DPR：
+// 否则在 devicePixelRatio=1 的普通屏上 Math.min(step, 1) 恒等于 1，整条降档阶梯形同虚设，
+// 卡顿时反而无处可降。现在低端能下探到 0.62 倍原生分辨率。
+const RES_STEPS = [0.62, 0.75, 0.88, 1.0, 1.15];
+const RES_BASE = Math.min(window.devicePixelRatio || 1, 1.5);
+let resIdx = 3;                        // 从 1.0 档（= RES_BASE）起步
+let lowStreak = 0, highStreak = 0;
+function applyResolution(idx) {
+  resIdx = clamp(idx, 0, RES_STEPS.length - 1);
+  const target = Math.max(0.5, RES_BASE * RES_STEPS[resIdx]);
+  if (Math.abs(renderer.getPixelRatio() - target) < 0.01) return;
+  renderer.setPixelRatio(target);
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+function adaptResolution(fps) {
+  if (fps < 34) { lowStreak++; highStreak = 0; } else if (fps > 56) { highStreak++; lowStreak = 0; } else { lowStreak = highStreak = 0; }
+  if (lowStreak >= 2 && resIdx > 0) { applyResolution(resIdx - 1); lowStreak = 0; }
+  else if (highStreak >= 6 && resIdx < RES_STEPS.length - 1) { applyResolution(resIdx + 1); highStreak = 0; }
+}
+
+/* ==================== 阴影按需更新 ==================== */
+// 默认每帧都要把整个场景再画一遍进 shadow map。这里关掉自动更新，
+// 只在「太阳方向 / 相机 / 焦点 / 阴影视锥」真的变了时才补画一次 ——
+// 相机停住时（看信息卡、读数据）这一遍开销直接归零。
+const shadowPrev = { sun: new THREE.Vector3(9, 9, 9), cam: new THREE.Vector3(), tgt: new THREE.Vector3(), d: 0 };
+function updateShadowOnDemand() {
+  renderer.shadowMap.autoUpdate = false;
+  const moved = shadowPrev.cam.distanceToSquared(camera.position) > 0.0025
+    || shadowPrev.tgt.distanceToSquared(controls.target) > 0.0025
+    || shadowPrev.sun.distanceToSquared(sunDir) > 1e-6
+    || Math.abs(shadowPrev.d - shadowState.d) > 0.5;
+  if (moved) {
+    shadowPrev.cam.copy(camera.position);
+    shadowPrev.tgt.copy(controls.target);
+    shadowPrev.sun.copy(sunDir);
+    shadowPrev.d = shadowState.d;
+    renderer.shadowMap.needsUpdate = true;
+    shadowsSettled = false;
+  }
+}
+let shadowsSettled = false;
+
+/* ==================== 主循环 ==================== */
+let frames = 0, acc = 0, mmAcc = 0;
+
+// 冷却 + 停手：四十毫秒级的 PMREM 烘焙不能打断交互。
+// ① 冷却：任意两次烘焙至少隔 ENV_COOLDOWN；
+// ② 停手：拖时间滑块时静止满 ENV_SETTLE 才动；
+// ③ 漂移：自动走时永不静止，改用累计跨度兜底，避免 IBL 停在旧太阳上。
+const ENV_COOLDOWN = 1200;
+const ENV_SETTLE = 200;
+const ENV_DRIFT = 0.5;
+function flushEnv(nowMs) {
+  if (envPending === null || !env) { envPending = null; return; }
+  if (nowMs - lastEnvMs <= ENV_COOLDOWN) return;
+  const settled = nowMs - lastTimeChangeMs > ENV_SETTLE;
+  const drifted = Math.abs(envPending - lastEnvHours) >= ENV_DRIFT;
+  if (!envReady || settled || drifted) {
+    lastEnvHours = envPending;
+    applyEnv(envPending);
+    envPending = null;
+  }
+}
+function loop() {
+  // 注意：这里不能再写 requestAnimationFrame(loop)。
+  // 主循环由 renderer.setAnimationLoop(loop) 驱动，它内部已经有一条自续期的
+  // requestAnimationFrame 链（见 WebGLAnimation.onAnimationFrame）；两条链并存会
+  // 让每帧的回调数逐帧累加 —— 第 n 帧就要渲染 n 次，页面必然越跑越卡。
+  const dt = Math.min(clock.getDelta(), 0.1);
+  const t = clock.elapsedTime;
+  const nowMs = performance.now();
+
+  if (autoTime) {
+    applyTime((timeHours + dt * 0.35) % 24);
+    $('#timeSlider').value = timeHours;
+  }
+  // 共享环境贴图重烘焙（PMREM）要几十毫秒，必须节流：
+  // applyTime 只登记待办，真正的烘焙时机由 flushEnv() 裁决。
+  flushEnv(nowMs);
+  if (grow < 1) {
+    grow = Math.min(1, grow + dt * 0.42);
+    city.setGrowth(grow);
+  }
+  if (waterMat) waterMat.uniforms.uTime.value = t;
+  if (cars) cars.update(dt, cars.group.visible);
+  flushHover();
+
+  const animating = updateAnim();
+  if (!animating) controls.update();
+  updateShadowFocus();   // 阴影视锥跟随焦点距离（街景收紧 / 航拍放宽）
+  updateShadowOnDemand();
+
+  // 水面陆游载体
+  for (const it of landmarkItems) {
+    for (const b of it.floaters) b.position.y = 0.36 + Math.sin(t * 1.2 + it.pos.x) * 0.06;
+    if (it.tick) it.tick(t, dt);        // 地标逐帧动画（航空障碍灯闪烁等）
+  }
+
+  updateLabels();
+
+  mmAcc += dt;
+  if (mmAcc > 0.2) { drawMinimap(); mmAcc = 0; }
+
+  acc += dt; frames++;
+  if (acc > 0.6) {
+    const fps = Math.round(frames / acc);
+    $('#statFps').textContent = `${fps} FPS`;
+    $('#statCam').textContent = `视距 ${Math.round(camera.position.distanceTo(controls.target))}u ≈ ${(camera.position.distanceTo(controls.target) / 10).toFixed(1)}km`;
+    adaptResolution(fps);
+    frames = 0; acc = 0;
+  }
+
+  renderer.render(scene, camera);
+}
+
+/* ==================== 启动 ==================== */
+(async function main() {
+  await build();
+  bindUI();
+  renderer.setAnimationLoop(loop);
+  // 开场：城市由地平线生长
+  grow = 0;
+  flyTo(new THREE.Vector3(0, 4, 0), 420, 46, Math.PI * 0.28, 2600);
+  setTimeout(() => {
+    $('#loading').classList.add('done');
+    selectById('zifeng', true);
+  }, 700);
+})();
