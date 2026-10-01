@@ -6,14 +6,85 @@ export const VPM = 1 / 30;             // units per meter (vertical)
 export const ORIGIN_LON = 118.7550;    // 场景原点（大致为南京主城几何中心）
 export const ORIGIN_LAT = 32.0550;
 
-const KM_PER_LON = 94.30;   // 南京纬度下 1 经度 ≈ 94.3 km
-const KM_PER_LAT = 110.90;  // 1 纬度 ≈ 110.9 km
+/* ==================== 投影：以原点为中央子午线的横轴墨卡托（高斯-克吕格） ====================
+ *
+ * 曾经这里是「固定 km/度」的等距圆柱近似：
+ *     x = (lon - ORIGIN_LON) * KM_PER_LON * UPK，KM_PER_LON = 94.30
+ * 该常数只在原点纬度上成立。场景东西跨度近 40 km、纬度跨 31.96°–32.15°，
+ * 常数系数因此带来系统性缩放误差 —— tools/geocheck.mjs 实测：
+ * 东西向点对平均短 0.109%，最差点对（南京眼↔仙林）偏 25 m，达不到 1:1。
+ *
+ * 现改为正经的横轴墨卡托：中央子午线取原点经度，椭球取 WGS84/CGCS2000，
+ * 子午线弧长、卯酉圈半径、子午线收敛与尺度畸变全部按级数展开到 l⁶。
+ * 由于最远点距中央子午线不足 0.25°，截断误差在毫米量级 —— 对 1:1 复刻而言足够。
+ * 校验方式见 tools/geocheck.mjs：用与投影无关的 Vincenty 椭球大地线做第三方真值。
+ */
+const DEG = Math.PI / 180;
 
-export function xFromLon(lon) { return (lon - ORIGIN_LON) * KM_PER_LON * UPK; }
-export function zFromLat(lat) { return -(lat - ORIGIN_LAT) * KM_PER_LAT * UPK; }
+const ECC_A = 6378137.0;                  // 长半轴 (m)
+const ECC_F = 1 / 298.257223563;          // 扁率
+const E2 = ECC_F * (2 - ECC_F);           // e²
+const EP2 = E2 / (1 - E2);                // e'²
 
-/** 经纬度 -> 场景 XZ 平面坐标（北 = -Z） */
-export function toV2(lon, lat) { return [xFromLon(lon), zFromLat(lat)]; }
+// 子午线弧长级数系数（精确到 e⁸）
+const AR = (() => {
+  const e2 = E2, e4 = e2 * e2, e6 = e4 * e2, e8 = e4 * e4;
+  return {
+    a0: 1 - e2 / 4 - (3 * e4) / 64 - (5 * e6) / 256 - (175 * e8) / 16384,
+    a2: (3 * e2) / 8 + (3 * e4) / 32 + (45 * e6) / 1024 + (105 * e8) / 4096,
+    a4: (15 * e4) / 256 + (45 * e6) / 1024 + (525 * e8) / 16384,
+    a6: (35 * e6) / 3072 + (175 * e8) / 12288,
+    a8: (315 * e8) / 131072,
+  };
+})();
+
+/** 赤道至纬度 B 的子午线弧长（B 为弧度）
+ *  Snyder《Map Projections》式 3-21：系数已含 1/n，正弦项**不再**除 2、4、6、8。
+ *  （早期版本多除了分母，导致南北向每度多算 114 m —— 正是 geocheck 里那 930 ppm 的来源）
+ */
+function meridianArc(B) {
+  return ECC_A * (
+    AR.a0 * B
+    - AR.a2 * Math.sin(2 * B)
+    + AR.a4 * Math.sin(4 * B)
+    - AR.a6 * Math.sin(6 * B)
+    + AR.a8 * Math.sin(8 * B)
+  );
+}
+
+/**
+ * 高斯投影正算：经纬度(度) → [东向米, 北向米]（相对中央子午线 L0，未加带号与 500 km 偏移）
+ */
+export function gaussForward(lon, lat, L0 = ORIGIN_LON) {
+  const B = lat * DEG;
+  const l = (lon - L0) * DEG;
+  const sB = Math.sin(B), cB = Math.cos(B), tB = sB / cB;
+  const t2 = tB * tB, t4 = t2 * t2;
+  const cB2 = cB * cB, cB3 = cB2 * cB, cB5 = cB3 * cB2;
+  const eta2 = EP2 * cB2, eta4 = eta2 * eta2;
+  const N = ECC_A / Math.sqrt(1 - E2 * sB * sB);   // 卯酉圈半径
+  const l2 = l * l, l3 = l2 * l, l4 = l3 * l, l5 = l4 * l, l6 = l5 * l;
+
+  const north = meridianArc(B)
+    + (N / 2) * sB * cB * l2
+    + (N / 24) * sB * cB3 * (5 - t2 + 9 * eta2 + 4 * eta4) * l4
+    + (N / 720) * sB * cB5 * (61 - 58 * t2 + t4) * l6;
+
+  const east = N * cB * l
+    + (N / 6) * cB3 * (1 - t2 + eta2) * l3
+    + (N / 120) * cB5 * (5 - 18 * t2 + t4 + 14 * eta2 - 58 * eta2 * t2) * l5;
+
+  return [east, north];
+}
+
+// 原点自身的投影坐标：所有落位都相对它做差
+const ORIGIN_EN = gaussForward(ORIGIN_LON, ORIGIN_LAT);
+
+/** 经纬度 -> 场景 XZ 平面坐标（北 = -Z，1 单位 = 100 m） */
+export function toV2(lon, lat) {
+  const [e, n] = gaussForward(lon, lat);
+  return [(e - ORIGIN_EN[0]) / 100, -(n - ORIGIN_EN[1]) / 100];
+}
 export function toV2List(list) { return list.map(([lo, la]) => toV2(lo, la)); }
 
 /** 米 -> 场景高度单位（统一 3.33 倍竖向夸张） */
@@ -29,9 +100,24 @@ export const footU = (m) => m / M_PER_U_V;          // 单体截面/占地：与
 /** 方位角(自北顺时针, 度) -> 场景 rotation.y：北为 -Z，东为 +X */
 export const bearingToRot = (deg) => Math.PI - (deg * Math.PI) / 180;
 
-/** 场景坐标 -> 经纬度（用于信息展示） */
+/** 场景坐标 -> 经纬度：牛顿迭代反解高斯投影（仅供信息展示，4 步即收敛到亚米级） */
 export function toLonLat(x, z) {
-  return [ORIGIN_LON + x / (KM_PER_LON * UPK), ORIGIN_LAT - z / (KM_PER_LAT * UPK)];
+  const east = x * 100 + ORIGIN_EN[0];
+  const north = -z * 100 + ORIGIN_EN[1];
+  let lat = ORIGIN_LAT + (north - ORIGIN_EN[1]) / 110900;   // 等距圆柱初值
+  let lon = ORIGIN_LON + (east - ORIGIN_EN[0]) / 94300;
+  for (let i = 0; i < 4; i++) {
+    const [e, n] = gaussForward(lon, lat);
+    const de = e - east, dn = n - north;
+    const h = 1e-7;
+    const [eL] = gaussForward(lon + h, lat);
+    const [, nB] = gaussForward(lon, lat + h);
+    const de_dlon = (eL - e) / h;      // ∂east/∂lon（每度）
+    const dn_dlat = (nB - n) / h;      // ∂north/∂lat（每度）
+    lon -= de / de_dlon;
+    lat -= dn / dn_dlat;
+  }
+  return [lon, lat];
 }
 
 /* ---------------- 随机数 / 噪声 ---------------- */
@@ -171,8 +257,6 @@ export const smoothstep = (t) => t * t * (3 - 2 * t);
 export const easeInOutCubic = (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2);
 
 /* ---------------- 太阳（实时光照与 IBL 烘焙共用的唯一来源） ---------------- */
-
-const DEG = Math.PI / 180;
 
 /**
  * 给定钟点求太阳状态。

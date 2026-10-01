@@ -189,6 +189,15 @@ export function buildWater(material) {
   river.name = 'river';
   group.add(river);
 
+  // 支汊（夹江）：窄航道，宽度不再做主江那样的摆动
+  for (const br of RIVER.branches || []) {
+    const bp = smoothPolyline(toV2List(br.pts), 8);
+    const bg = ribbonGeometry(bp, br.halfWidth * 2, 0.34, 0.05);
+    const bm = new THREE.Mesh(bg, material);
+    bm.name = 'branch:' + (br.name || '夹江');
+    group.add(bm);
+  }
+
   // 湖泊
   for (const lake of LAKES) {
     const poly = toV2List(lake.pts);

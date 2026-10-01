@@ -923,18 +923,22 @@ function loop() {
   // 开场：城市由地平线生长
   grow = 0;
   flyTo(new THREE.Vector3(0, 4, 0), 420, 46, Math.PI * 0.28, 2600);
-  // ?t=22.5 直接落到指定时刻（调试夜景 / 分享带时刻的链接）
+  // URL 参数：?t=22.5 指定时刻；?lm=nanjingeye 开场飞到指定地标（?lm=none 保持全景）
+  // 二者组合即可分享"某时刻 + 某地标"的链接，也便于无交互地截图自检
+  let lmParam = 'zifeng';
   try {
-    const tParam = parseFloat(new URLSearchParams(location.search).get('t'));
+    const q = new URLSearchParams(location.search);
+    const tParam = parseFloat(q.get('t'));
     if (Number.isFinite(tParam)) {
       timeHours = clamp(tParam, 0, 24);
       applyTime(timeHours);
       elTimeSlider.value = timeHours;
     }
+    if (q.get('lm') !== null) lmParam = q.get('lm');
   } catch (e) {}
   setTimeout(() => {
     $('#loading').classList.add('done');
-    selectById('zifeng', true);
+    if (lmParam !== 'none') selectById(lmParam, true);
   }, 700);
   // 操作提示只在刚进入时有引导价值，读完即淡出，不长期占用底部视线
   setTimeout(() => $('#hint').classList.add('fade'), 9000);
