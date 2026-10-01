@@ -271,7 +271,11 @@ export function registerEnv(material, base = 0.5) {
   ENV_MATS.push(material);
   return material;
 }
+let lastEnvK = -1;
 export function setEnvIntensity(k) {
+  // 自动昼夜每帧都会路过这里；逐材质写 envMapIntensity 是白烧，值几乎不变时直接跳过
+  if (Math.abs(k - lastEnvK) < 0.004) return;
+  lastEnvK = k;
   for (const m of ENV_MATS) m.envMapIntensity = (m.userData.envBase ?? 1) * k;
 }
 

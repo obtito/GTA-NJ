@@ -23,8 +23,13 @@ const loadText = $('#loadText');
 const CAT_COLOR = {};
 for (const c of CATEGORIES) CAT_COLOR[c.key] = c.color;
 
+// 主循环里每帧要碰的 DOM 节点只查一次
+const elTimeVal = $('#timeVal');
+const elTimeSlider = $('#timeSlider');
+
 /* ==================== 渲染器 / 场景 ==================== */
 let renderer, scene, camera, controls, sky, sunLight, hemi, ambient, waterMat;
+let moonLight, stars;
 let city, trees, cars, roads, waterGroup;
 let env = null;                       // 共享 HDR 环境（PMREM）
 let landmarkItems = [];
@@ -93,6 +98,40 @@ function initRenderer() {
   scene.add(sunLight);
   scene.add(sunLight.target);
 
+  // 夜间月光：太阳落下后场景不再只剩黑，一盏冷色的低强度平行光维持可读的轮廓
+  moonLight = new THREE.DirectionalLight(0x8ea6c8, 0);
+  scene.add(moonLight);
+  scene.add(moonLight.target);
+
+  // 夜间星空：上半球随机布点，透明通道在天空之后绘制，只随 night 因子淡入
+  {
+    const N = 1300;
+    const pos = new Float32Array(N * 3);
+    const col = new Float32Array(N * 3);
+    const c = new THREE.Color();
+    for (let i = 0; i < N; i++) {
+      // y ∈ (0.06, 1]，拒绝地平线附近的星；半径 3500 位于远裁剪面 4000 之内
+      const y = 0.06 + Math.random() * 0.94;
+      const a = Math.random() * Math.PI * 2;
+      const r = Math.sqrt(1 - y * y);
+      pos[i * 3] = Math.cos(a) * r * 3500;
+      pos[i * 3 + 1] = y * 3500;
+      pos[i * 3 + 2] = Math.sin(a) * r * 3500;
+      // 冷暖微差：大部分偏白，少数偏蓝 / 偏暖
+      c.setHSL(0.55 + (Math.random() - 0.5) * 0.25, 0.25 * Math.random(), 0.72 + Math.random() * 0.28);
+      col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b;
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    stars = new THREE.Points(g, new THREE.PointsMaterial({
+      size: 2.2, sizeAttenuation: false, vertexColors: true,
+      transparent: true, opacity: 0, depthWrite: false, fog: false,
+    }));
+    stars.frustumCulled = false;
+    scene.add(stars);
+  }
+
   // 共享 HDR 环境：程序化天空 -> PMREM，供玻璃幕墙、车漆等地物的 PBR 反射使用
   env = createEnvironment(renderer);
 }
@@ -153,6 +192,16 @@ function applyTime(hours) {
   scene.fog.color.copy(skyColor);
   renderer.toneMappingExposure = lerp(0.52, 0.72, day);
 
+  // 星空与月光：只在入夜后淡入，白天/黄昏保持零开销（透明物体在天空之后绘制）
+  if (stars) stars.material.opacity = night * 0.9;
+  if (moonLight) {
+    moonLight.intensity = night * 0.16;
+    // 月亮大致出现在太阳的对面：把太阳方向的水平分量反转、抬高
+    moonLight.position.set(-sunDir.x * 400, Math.max(260, -sunDir.y * 400), -sunDir.z * 400);
+    moonLight.target.position.set(0, 0, 0);
+    moonLight.target.updateMatrixWorld();
+  }
+
   if (waterMat) {
     // 水面反射与 PBR 共用同一片天空：地平线取雾色提亮，天顶取更深的蓝
     horizonColor.copy(skyColor).offsetHSL(0, -0.04, 0.07);
@@ -174,7 +223,7 @@ function applyTime(hours) {
 
   const hh = Math.floor(hours);
   const mm = Math.floor((hours - hh) * 60);
-  $('#timeVal').textContent = `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+  elTimeVal.textContent = `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
 }
 
 /* ==================== 阴影契约：焦点距离驱动 ==================== */
@@ -423,6 +472,10 @@ function selectById(id, fly = true) {
 }
 
 /* ==================== 相机飞行 ==================== */
+// 预分配临时对象：飞行期间每帧执行本函数，任何 clone()/new 都是白白的 GC 压力
+const _sph = new THREE.Spherical();
+const _off = new THREE.Vector3();
+const _tgt = new THREE.Vector3();
 function flyTo(targetPos, dist, polarDeg, azimuthRad, dur = 1500) {
   const now = performance.now();
   const off = camera.position.clone().sub(controls.target);
@@ -447,10 +500,10 @@ function updateAnim() {
   const r = lerp(anim.sph0.radius, anim.sph1.radius, e);
   const p = lerp(anim.sph0.phi, anim.sph1.phi, e);
   const a = anim.sph0.theta + anim.da * e;
-  const tgt = anim.from.clone().lerp(anim.to, e);
-  const off = new THREE.Vector3().setFromSpherical(new THREE.Spherical(r, p, a));
-  camera.position.copy(tgt).add(off);
-  controls.target.copy(tgt);
+  _tgt.copy(anim.from).lerp(anim.to, e);
+  _off.setFromSpherical(_sph.set(r, p, a));
+  camera.position.copy(_tgt).add(_off);
+  controls.target.copy(_tgt);
   if (t >= 1) anim = null;
   return true;
 }
@@ -560,46 +613,57 @@ const px2mm = (x, y) => [
   (y / mm.height) * MM_EXT * 2 - MM_EXT,
 ];
 
-function drawMinimap() {
+/* 小地图静态层（片区 / 长江 / 城墙）只画一次，之后每帧 drawImage 复用。
+ * 此前每 0.2 s 全量重绘 393 段路网折线，其中 95% 的像素与上一帧完全相同。 */
+const mmStatic = document.createElement('canvas');
+mmStatic.width = mm.width; mmStatic.height = mm.height;
+const sctx = mmStatic.getContext('2d');
+function renderStaticMinimap() {
   const w = mm.width, h = mm.height;
-  mctx.clearRect(0, 0, w, h);
-  mctx.fillStyle = '#eef1f3';
-  mctx.fillRect(0, 0, w, h);
+  sctx.clearRect(0, 0, w, h);
+  sctx.fillStyle = '#eef1f3';
+  sctx.fillRect(0, 0, w, h);
 
   // 片区
-  mctx.fillStyle = 'rgba(150,165,150,.22)';
+  sctx.fillStyle = 'rgba(150,165,150,.22)';
   for (const d of DISTRICTS) {
     const c = toV2(d.lon, d.lat);
     const px = mm2px(c);
-    mctx.save();
-    mctx.translate(px[0], px[1]);
-    mctx.rotate(-(d.rot * Math.PI) / 180);
-    mctx.fillRect(-((d.w * 10) / (MM_EXT * 2)) * w / 2, -((d.d * 10) / (MM_EXT * 2)) * h / 2,
+    sctx.save();
+    sctx.translate(px[0], px[1]);
+    sctx.rotate(-(d.rot * Math.PI) / 180);
+    sctx.fillRect(-((d.w * 10) / (MM_EXT * 2)) * w / 2, -((d.d * 10) / (MM_EXT * 2)) * h / 2,
       ((d.w * 10) / (MM_EXT * 2)) * w, ((d.d * 10) / (MM_EXT * 2)) * h);
-    mctx.restore();
+    sctx.restore();
   }
 
   // 长江
-  mctx.strokeStyle = '#5c9bc0';
-  mctx.lineWidth = 5;
-  mctx.lineJoin = 'round';
-  mctx.beginPath();
+  sctx.strokeStyle = '#5c9bc0';
+  sctx.lineWidth = 5;
+  sctx.lineJoin = 'round';
+  sctx.beginPath();
   RIVER_PTS.forEach((p, i) => {
     const q = mm2px(p);
-    if (i === 0) mctx.moveTo(q[0], q[1]); else mctx.lineTo(q[0], q[1]);
+    if (i === 0) sctx.moveTo(q[0], q[1]); else sctx.lineTo(q[0], q[1]);
   });
-  mctx.stroke();
+  sctx.stroke();
 
   // 城墙
-  mctx.strokeStyle = 'rgba(150,120,90,.85)';
-  mctx.lineWidth = 1.2;
-  mctx.beginPath();
+  sctx.strokeStyle = 'rgba(150,120,90,.85)';
+  sctx.lineWidth = 1.2;
+  sctx.beginPath();
   WALL_PTS.forEach((p, i) => {
     const q = mm2px(p);
-    if (i === 0) mctx.moveTo(q[0], q[1]); else mctx.lineTo(q[0], q[1]);
+    if (i === 0) sctx.moveTo(q[0], q[1]); else sctx.lineTo(q[0], q[1]);
   });
-  mctx.closePath();
-  mctx.stroke();
+  sctx.closePath();
+  sctx.stroke();
+}
+renderStaticMinimap();
+
+function drawMinimap() {
+  mctx.clearRect(0, 0, mm.width, mm.height);
+  mctx.drawImage(mmStatic, 0, 0);
 
   // 地标
   for (const it of landmarkItems) {
@@ -794,7 +858,7 @@ function loop() {
 
   if (autoTime) {
     applyTime((timeHours + dt * 0.35) % 24);
-    $('#timeSlider').value = timeHours;
+    elTimeSlider.value = timeHours;
   }
   // 共享环境贴图重烘焙（PMREM）要几十毫秒，必须节流：
   // applyTime 只登记待办，真正的烘焙时机由 flushEnv() 裁决。
