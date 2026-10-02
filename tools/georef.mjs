@@ -27,7 +27,7 @@ export const GEO_REF = {
   southstation:  { lon: 118.7931417,  lat: 31.9707167, src: 'zhwiki + OSM 双源一致',  ref: '站房中心' },
   yuejianglou:   { lon: 118.7411583,  lat: 32.0962889, src: 'zhwiki 阅江楼',          ref: '楼' },
   presidential:  { lon: 118.79222,    lat: 32.04472,   src: 'zhwiki 近代史遗址博物馆', ref: '门楼' },
-  museum:        { lon: 118.8201722,  lat: 32.0426444, src: 'zhwiki 南京博物院',      ref: '历史馆' },
+  museum:        { lon: 118.8201722,  lat: 32.0415,    src: 'zhwiki 南京博物院',      ref: '历史馆（中山东路南侧院内）' },
   yuhuatai:      { lon: 118.7754,     lat: 31.9990,    src: 'zhwiki 雨花台',          ref: '烈士纪念碑' },
   jimingsi:      { lon: 118.79000,    lat: 32.06306,   src: 'zhwiki 鸡鸣寺',          ref: '寺' },
   qixiasi:       { lon: 118.95417,    lat: 32.15417,   src: 'zhwiki 栖霞寺',          ref: '寺' },

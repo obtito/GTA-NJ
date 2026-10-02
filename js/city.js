@@ -351,7 +351,7 @@ export function buildTrees({ exclusions = [], seed = 4242 } = {}) {
 /* ============ 车流 ============ */
 export function buildCars(centerlines, count = 110, seed = 999) {
   const rand = makeRandom(seed);
-  const lines = centerlines.filter((l) => l.w > 2.5);
+  const lines = centerlines.filter((l) => l.w > 0.35);   // 主干道（单位与路宽同口径）
   if (!lines.length) return { group: new THREE.Group(), update: () => {} };
   const geo = new THREE.BoxGeometry(1, 1, 1);
   const carMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.35, metalness: 0.35 });

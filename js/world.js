@@ -1,7 +1,7 @@
 // 地形：地面、山体、水面、道路、城墙
 import * as THREE from 'three';
 import { toV2, toV2List, mY, vU, hU, fbm, noise2, smoothstep as smooth, smoothPolyline, resample, distToPolyline, clamp } from './geo.js';
-import { RIVER, LAKES, ISLANDS, ROADS, MOUNTAINS, CITY_WALL, LANDMARKS } from './data.js';
+import { RIVER, LAKES, ISLANDS, ROADS, MOUNTAINS, CITY_WALL, CITY_GATES, LANDMARKS } from './data.js';
 import { mat, UNIT, put, ribbonGeometry, polygonGeometry, QuadBuilder, makeGroundTexture, registerEnv } from './lib.js';
 
 /* ==================== 高度场 ==================== */
@@ -273,8 +273,10 @@ export function buildWater(material) {
 /** 返回 { mesh, centerlines } —— centerlines 供车辆行驶使用 */
 export function buildRoads(extraLines = []) {
   const lines = [];
+  // w 直接就是场景单位（1 单位 = 100 m）：0.5 → 50 m，符合真实主干道宽度。
+  // 旧版写成 r.w * 10 = 500 m 宽的路面带，整条中山东路变成了吞掉沿线地标的大平原。
   for (const r of ROADS) {
-    lines.push({ name: r.name, w: r.w * 10, pts: toV2List(smoothPolyline(r.pts, 6)) });
+    lines.push({ name: r.name, w: r.w, pts: toV2List(smoothPolyline(r.pts, 6)) });
   }
   for (const e of extraLines) lines.push(e);
 
@@ -295,10 +297,10 @@ export function buildRoads(extraLines = []) {
   mesh.name = 'roads';
   mesh.receiveShadow = true;
 
-  // 夜间发光的道路中心线
+  // 夜间发光的道路中心线（只画主干道）
   const glowBuilder = new QuadBuilder();
   for (const l of lines) {
-    if (l.w < 3.2) continue;
+    if (l.w < 0.35) continue;
     for (let i = 0; i < l.pts.length - 1; i++) {
       const [x0, z0] = l.pts[i], [x1, z1] = l.pts[i + 1];
       let dx = x1 - x0, dz = z1 - z0;
@@ -321,11 +323,17 @@ export function buildWall() {
   group.name = 'citywall';
   const poly = smoothPolyline(toV2List(CITY_WALL), 7);
   const closed = poly.concat([poly[0]]);
+  const gatePts = CITY_GATES.map((gt) => toV2(gt.lon, gt.lat));
+  // 距城门多近算豁口：门洞本身约 40 m，两侧再加护坡，取 ±60 m
+  const GATE_OPEN = 0.6;
+  const nearGate = (x, z) => gatePts.some((q) => Math.hypot(x - q[0], z - q[1]) < GATE_OPEN);
   const segs = [];
   for (let i = 0; i < closed.length - 1; i++) {
     const [x0, z0] = closed[i], [x1, z1] = closed[i + 1];
     const len = Math.hypot(x1 - x0, z1 - z0);
     if (len < 0.2) continue;
+    // 城门是墙上的「口」：门址附近的段跳过，主干道从豁口通过
+    if (nearGate((x0 + x1) / 2, (z0 + z1) / 2)) continue;
     segs.push({ x0, z0, x1, z1, len, ang: Math.atan2(x1 - x0, z1 - z0) });
   }
 
@@ -352,6 +360,7 @@ export function buildWall() {
     for (let k = 0; k < n; k++) {
       const f = (k + 0.5) / n;
       const px = s.x0 + (s.x1 - s.x0) * f, pz = s.z0 + (s.z1 - s.z0) * f;
+      if (nearGate(px, pz)) continue;   // 雉堞同样给城门让位
       dummy.position.set(px, wallH, pz);
       dummy.rotation.set(0, s.ang, 0);
       dummy.scale.set(wallW * 0.62, vU(1.8), step * 0.5);
