@@ -101,6 +101,10 @@ console.log('片区路网线段=' + grid.length);
 const roads = w.buildRoads(grid);
 report('道路', roads.mesh);
 
+// 城墙：曾因未被 smoke 覆盖，运行时的 ReferenceError(hU 未导入) 只在浏览器里爆发
+const wall = w.buildWall();
+report('城墙', wall.group);
+
 const city = c.buildCity({ exclusions: lm.exclusions });
 report('楼群', city.group);
 console.log('建筑实例=' + city.count);

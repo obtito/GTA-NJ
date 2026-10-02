@@ -11,8 +11,8 @@
 //
 // 用法: node tools/geocheck.mjs
 
-import { toV2 } from '../js/geo.js';
-import { LANDMARKS } from '../js/data.js';
+import { toV2, polylineLength, pointInPolygon } from '../js/geo.js';
+import { LANDMARKS, CITY_WALL, LAKES } from '../js/data.js';
 
 /* ---------- WGS84 椭球大地线（Vincenty 反解） ---------- */
 const A = 6378137.0;
@@ -97,6 +97,21 @@ const statOf = (list) => {
 };
 console.log(`东西向为主：${statOf(ew)}`);
 console.log(`南北向为主：${statOf(ns)}`);
+
+/* ---------- 城墙 vs 水体 / 周长 ---------- */
+{
+  const inside = [];
+  for (const [lo, la] of CITY_WALL) {
+    for (const l of LAKES) if (pointInPolygon(lo, la, l.pts)) inside.push(`${l.name}(${lo},${la})`);
+  }
+  // polylineLength 吃的是场景单位：先把经纬度落位再量，1 单位 = 100 m → km = 单位/10
+  const wallU = CITY_WALL.concat([CITY_WALL[0]]).map(([lo, la]) => toV2(lo, la));
+  const km = polylineLength(wallU) / 10;
+  console.log("=== 明城墙折线 ===");
+  console.log(`周长 ${km.toFixed(2)} km（实测：京城原 35.267 km / 现存约 25 km）`);
+  console.log(inside.length ? `WARN  有 ${inside.length} 个墙点落在湖体内：${inside.join('、')}` : 'OK  无墙点落在湖体内（湖完整位于城外）');
+  console.log('');
+}
 
 const worst = max;
 console.log(`\n${worst <= 20 ? 'OK  最大偏差 ≤ 20 m（城市沙盘可接受的 1:1）' : 'WARN  存在 > 20 m 的偏差，换算系数或投影需修正'}`);

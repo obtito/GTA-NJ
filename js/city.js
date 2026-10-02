@@ -1,16 +1,21 @@
 // 程序化城市：建筑、行道树、车流
 import * as THREE from 'three';
 import { toV2, toV2List, mY, makeRandom, clamp, pointInPolygon, distToPolyline, smoothPolyline } from './geo.js';
-import { DISTRICTS, PARKS, RIVER, LAKES } from './data.js';
+import { DISTRICTS, PARKS, RIVER, LAKES, CITY_WALL } from './data.js';
 import { makeFacadeTexture, makeWindowTexture, makeRoofTexture, patchMaterial, instancedBoxes, registerEnv } from './lib.js';
 import { terrainHeight } from './world.js';
 
 const RIVER_PTS = toV2List(RIVER.pts);
 const LAKE_POLYS = LAKES.map((l) => toV2List(l.pts));
+const WALL_PTS = toV2List(CITY_WALL);
 
-/* ============ 掩膜：水体 / 山体 / 地标占地 之上不生成建筑 ============ */
+/* ============ 掩膜：水体 / 山体 / 城墙 / 地标占地 之上不生成建筑 ============ */
+// 城墙开槽：WALL_CLEAR 为墙体两侧的净空（场景单位，1 单位 = 100 m）。
+// 城垣沿线本就有护城河与保护带，楼群压在墙上既失真又必然穿模。
+const WALL_CLEAR = 0.55;
 function blocked(x, z, exclusions) {
   if (distToPolyline(x, z, RIVER_PTS) < RIVER.halfWidth + 1.2) return true;
+  if (distToPolyline(x, z, WALL_PTS) < WALL_CLEAR) return true;
   for (const p of LAKE_POLYS) if (pointInPolygon(x, z, p)) return true;
   if (terrainHeight(x, z) > 0.45) return true;
   for (const e of exclusions) {

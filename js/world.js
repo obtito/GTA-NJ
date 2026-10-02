@@ -1,6 +1,6 @@
 // 地形：地面、山体、水面、道路、城墙
 import * as THREE from 'three';
-import { toV2, toV2List, mY, vU, fbm, noise2, smoothstep as smooth, smoothPolyline, resample, distToPolyline, clamp } from './geo.js';
+import { toV2, toV2List, mY, vU, hU, fbm, noise2, smoothstep as smooth, smoothPolyline, resample, distToPolyline, clamp } from './geo.js';
 import { RIVER, LAKES, ISLANDS, ROADS, MOUNTAINS, CITY_WALL, LANDMARKS } from './data.js';
 import { mat, UNIT, put, ribbonGeometry, polygonGeometry, QuadBuilder, makeGroundTexture, registerEnv } from './lib.js';
 
@@ -330,7 +330,10 @@ export function buildWall() {
   }
 
   const wallMat = mat('#8f8577', { rough: 0.95, env: 0.5 });
-  const wallH = 2.6, wallW = 1.9;
+  // 尺度按 spec 实测：墙体高约 14–26 m（取 20 m）、底宽约 10–18 m（取 20 m 含基础外扩）、雉堞高 1.8 m。
+  // 旧版写成 wallH=2.6 / wallW=1.9 个场景单位＝78 m 高、190 m 宽，
+  // 相当于一条 190 m 宽的巨型夯土垄横穿主城——沿途楼群必然被它吞掉，穿模由此而来。
+  const wallH = vU(20), wallW = hU(20);
   const body = new THREE.InstancedMesh(UNIT.box, wallMat, segs.length);
   const merlonMat = mat('#9a9082', { rough: 0.95, env: 0.5 });
   const merlonCount = segs.length * 3;
@@ -351,7 +354,7 @@ export function buildWall() {
       const px = s.x0 + (s.x1 - s.x0) * f, pz = s.z0 + (s.z1 - s.z0) * f;
       dummy.position.set(px, wallH, pz);
       dummy.rotation.set(0, s.ang, 0);
-      dummy.scale.set(wallW * 0.72, 0.55, step * 0.5);
+      dummy.scale.set(wallW * 0.62, vU(1.8), step * 0.5);
       dummy.updateMatrix();
       merlons.setMatrixAt(mi++, dummy.matrix);
     }
