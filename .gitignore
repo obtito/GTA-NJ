@@ -1,2 +1,12 @@
 node_modules/
 *.log
+
+# 一次性脚手架脚本（探针/量距/截图辅助），不入库；正式工具放 tools/ 根下
+tools/tmp/
+
+# 自检截图与无头浏览器 profile（.workbuddy 是工具数据目录，只忽略这两个产物）
+.workbuddy/*.png
+.workbuddy/.cdp-profile-*/
+
+# 巡检截图产物：npm run tour 可重新生成，不入库（27 MB 级二进制归档体积）
+docs/shots/
