@@ -11,7 +11,7 @@
 //
 // 用法: node tools/geocheck.mjs
 
-import { toV2, polylineLength, pointInPolygon } from '../js/geo.js';
+import { toV2, toLonLat, polylineLength, pointInPolygon, smoothPolyline } from '../js/geo.js';
 import { LANDMARKS, CITY_WALL, LAKES } from '../js/data.js';
 
 /* ---------- WGS84 椭球大地线（Vincenty 反解） ---------- */
@@ -110,6 +110,24 @@ console.log(`南北向为主：${statOf(ns)}`);
   console.log("=== 明城墙折线 ===");
   console.log(`周长 ${km.toFixed(2)} km（实测：京城原 35.267 km / 现存约 25 km）`);
   console.log(inside.length ? `WARN  有 ${inside.length} 个墙点落在湖体内：${inside.join('、')}` : 'OK  无墙点落在湖体内（湖完整位于城外）');
+
+  // 渲染用的是 smoothPolyline(CITY_WALL, 7)——Catmull-Rom 会过冲，
+  // 顶点在湖外不代表渲染出来的线也在湖外，必须按实际渲染的折线再查一遍
+  const sm = smoothPolyline(CITY_WALL.map(([lo, la]) => toV2(lo, la)), 7).concat([]);
+  const closed = sm.concat([sm[0]]);
+  let hit = 0, total = 0;
+  for (let i = 0; i < closed.length - 1; i++) {
+    const a = closed[i], b = closed[i + 1];
+    const n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / 0.2));
+    for (let k = 0; k <= n; k++) {
+      const x = a[0] + (b[0] - a[0]) * k / n, z = a[1] + (b[1] - a[1]) * k / n;
+      const [lo, la] = toLonLat(x, z);
+      total++;
+      for (const l of LAKES) if (pointInPolygon(lo, la, l.pts)) { hit++; break; }
+    }
+  }
+  console.log(`渲染折线（Catmull-Rom 平滑后）采样 ${total} 点，落入湖体 ${hit} 点 `
+    + (hit ? 'WARN  平滑过冲把墙推进了湖里' : 'OK  渲染出来的墙不进湖'));
   console.log('');
 }
 

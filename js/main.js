@@ -353,6 +353,9 @@ async function build() {
   }, 100);
 
   $('#statBuild').textContent = `${city.count.toLocaleString()} 建筑 · ${landmarkItems.length} 地标`;
+  // 加载时间戳：用于自检"看到的是不是最新构建"——与当前时钟不符即缓存页
+  const now = new Date();
+  $('#statLoad').textContent = `加载 ${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
   console.log('[GTA-NJ] 构建完成 · 阶段：', marks.join(' / '));
   console.log('[GTA-NJ] 城市 AO：', aoInfo ? `${aoInfo.width}×${aoInfo.height}, 有效单元 ${aoInfo.activeCells}, 平均天空可见度 ${aoInfo.meanVisibility.toFixed(3)}` : '未生成');
   console.log(

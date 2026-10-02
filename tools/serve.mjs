@@ -13,7 +13,7 @@ import path from 'node:path';
 import url from 'node:url';
 
 const ROOT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '..');
-const PORT = Number(process.argv[2]) || 8137;
+const PORT = Number(process.argv[2] || process.env.PORT) || 8137;
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
