@@ -597,3 +597,16 @@ export const CATEGORIES = [
   { key: '文体', color: '#8b52c9' },
   { key: '科教', color: '#2f9aa6' },
 ];
+
+/* ============ 城台沿墙半长（米） ============
+ * 城墙段必须正好裁到这个位置才接得上城门：
+ * 早先墙段按固定 ±60 m 切断，而城台沿墙只有 ~24 m，中间就空出几十米断口。
+ * 三孔门 = 中孔(span + 2×墩宽4.5) + 两侧各一孔(span×0.8 + 墩宽 + 6)；
+ * 遗址 = 道路走廊 11 m + 台基半宽 17 m。 */
+export function gateHalfLenM(gt) {
+  const span = gt.span || 7;
+  const pierW = 4.5;
+  if (gt.kind === 'ruin') return 11 + 17;
+  if ((gt.bays || 1) >= 3) return ((span + pierW * 2) + 2 * (span * 0.8 + pierW + 6)) / 2;
+  return (span + pierW * 2) / 2;
+}

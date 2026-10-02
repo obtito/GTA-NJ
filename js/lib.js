@@ -4,7 +4,8 @@ import * as THREE from 'three';
 /* ---------------- 材质缓存 ---------------- */
 const matCache = new Map();
 export function mat(hex, opts = {}) {
-  const key = hex + '|' + JSON.stringify(opts);
+  // 缓存键要把贴图折算成固定标记，否则每个贴图对象都会生成一份巨大的 toJSON 实体
+  const key = hex + '|' + JSON.stringify(opts, (k, v) => (v && v.isTexture ? 'TEX' : v));
   if (matCache.has(key)) return matCache.get(key);
   const m = new THREE.MeshStandardMaterial({
     color: new THREE.Color(hex),
@@ -16,8 +17,12 @@ export function mat(hex, opts = {}) {
     opacity: opts.opacity ?? 1,
     side: opts.side ?? THREE.FrontSide,
     map: opts.map || null,
+    normalMap: opts.normalMap || null,
+    bumpMap: opts.bumpMap || null,
+    roughnessMap: opts.roughnessMap || null,
     flatShading: !!opts.flat,
   });
+  if (opts.normalScale) m.normalScale.copy(opts.normalScale);
   matCache.set(key, m);
   registerEnv(m, opts.env ?? 0.5);
   return m;
@@ -125,6 +130,244 @@ export function makeGroundTexture(repeat = 260) {
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
   t.repeat.set(repeat, repeat);
   t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+/* ================== 城墙砌体贴图（程序化） ==================
+ *
+ * 依据南京明城墙实测砌法：城砖 40×20×10 cm（约 3.5 亿块，九成以上带府县／窑户铭文），
+ * 内外壁皆青砖，一顺一丁错缝，砖缝用石灰+糯米汁+桐油勾嵌；墙脚 1 m 余为花岗岩／石灰岩
+ * 条石勒脚；城顶平砖竖砌散水（内低外高，向城内排水）。城砖有青灰／黄灰／赭灰三色，
+ * 六百年风化后斑驳不匀，底部与缝内多苔藓水渍。
+ *
+ * 贴图按真实砖号排布（一格贴图＝N 米见方，砖块数即该边长内实际砖数），
+ * 顶点 UV 直接用「米」为单位喂给贴图，于是墙无论多长、段有多短，
+ * 砖缝都是 1:1 的实物尺度，绝不会被拉花。
+ */
+
+function wallPrng(seed) {
+  let s = seed >>> 0;
+  return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
+}
+
+/** 由灰度高度图用 Sobel 求法线贴图（省掉手绘 normal map） */
+function normalFromHeight(hc, strength = 2.6) {
+  const S = hc.width;
+  const src = hc.getContext('2d').getImageData(0, 0, S, S).data;
+  const out = document.createElement('canvas');
+  out.width = out.height = S;
+  const octx = out.getContext('2d');
+  const img = octx.createImageData(S, S);
+  // 环绕取样：贴图是 RepeatWrapping，边缘必须接得上
+  const gray = (x, y) => src[((((y % S) + S) % S) * S + (((x % S) + S) % S)) * 4] / 255;
+  for (let y = 0; y < S; y++) {
+    for (let x = 0; x < S; x++) {
+      const dx = (gray(x + 1, y) - gray(x - 1, y)) * strength;
+      const dy = (gray(x, y + 1) - gray(x, y - 1)) * strength;
+      const l = Math.hypot(-dx, -dy, 1);
+      const i = (y * S + x) * 4;
+      img.data[i] = ((-dx / l) * 0.5 + 0.5) * 255;
+      img.data[i + 1] = ((-dy / l) * 0.5 + 0.5) * 255;
+      img.data[i + 2] = (1 / l) * 127 + 128;
+      img.data[i + 3] = 255;
+    }
+  }
+  octx.putImageData(img, 0, 0);
+  return out;
+}
+
+/* 砖行布局：一顺一丁错缝（隔行错半砖），与真实砌法一致 */
+function brickRows(S, cols, rows, offsetEvery = 2) {
+  const bw = S / cols, bh = S / rows, out = [];
+  for (let r = 0; r < rows; r++) {
+    const off = (r % offsetEvery === 0 ? 0 : bw * 0.5);
+    for (let k = 0; k < cols; k++) out.push([k * bw + off, r * bh, bw, bh]);
+  }
+  return out;
+}
+
+/** 城砖砌体 —— 颜色贴图（青灰／黄灰／赭灰，带铭文、风化、苔藓、水渍） */
+export function makeWallBrickTexture(S = 512) {
+  if (typeof document === 'undefined') return null;
+  const c = canvas(S), ctx = c.getContext('2d');
+  const rnd = wallPrng(13660266);
+  const COLS = 10, ROWS = 10;                 // 一格 4 m × 2 m → 单砖 40×20 cm ✓
+  const bw = S / COLS, bh = S / ROWS, gap = Math.max(2, S / 150);
+  // 砖缝：石灰糯米汁勾嵌。这里压得比砖面暗——远景上 Brick 会被平均成一片灰，
+  // 只有把缝做深、砖面做亮，墙面在几十米外才还读得出"砌体"而不是一块平板。
+  ctx.fillStyle = '#6a665b'; ctx.fillRect(0, 0, S, S);
+  const tones = ['#8b9189', '#7d8884', '#95978c', '#918b77', '#87918b', '#97938a', '#7c8b87', '#8b9285'];
+
+  for (const [x, y, w, h] of brickRows(S, COLS, ROWS)) {
+    ctx.fillStyle = tones[(rnd() * tones.length) | 0];
+    ctx.fillRect(x + gap, y + gap, w - gap * 2, h - gap * 2);
+    // 窑变与风化：砖面深浅不均
+    for (let i = 0; i < 30; i++) {
+      const a = 0.04 + rnd() * 0.13;
+      ctx.fillStyle = rnd() > 0.5 ? `rgba(255,253,244,${a})` : `rgba(20,18,14,${a})`;
+      ctx.fillRect(x + gap + rnd() * (w - gap * 2), y + gap + rnd() * (h - gap * 2), 2 + rnd() * 15, 2 + rnd() * 9);
+    }
+    // 砖棱：上棱受光提亮、下棱背光压暗，弱光下也能读出砖缝
+    ctx.fillStyle = 'rgba(255,250,235,0.15)';
+    ctx.fillRect(x + gap, y + gap, w - gap * 2, Math.max(1, gap * 0.7));
+    ctx.fillStyle = 'rgba(0,0,0,0.2)';
+    ctx.fillRect(x + gap, y + h - gap - Math.max(1, gap * 0.75), w - gap * 2, Math.max(1, gap * 0.75));
+    // 崩边：六百年的磕碰
+    if (rnd() < 0.3) {
+      ctx.fillStyle = '#a9a292';
+      const ex = x + gap + rnd() * (w - gap * 2), ey = rnd() < 0.5 ? y + gap : y + h - gap;
+      ctx.fillRect(ex, ey, 3 + rnd() * 10, 2 + rnd() * 5);
+    }
+    // 铭文：明初城砖九成以上刻府县／提调官／窑匠名，远看是字、近看是斑
+    if (rnd() < 0.18) {
+      ctx.fillStyle = 'rgba(46,44,38,0.5)';
+      const cx0 = x + gap + w * 0.24, cy0 = y + gap + h * 0.3, gw = w * 0.5, gh = h * 0.42;
+      const n = 2 + ((rnd() * 3) | 0);
+      for (let i = 0; i < n; i++) {
+        const gx = cx0 + (i % 2) * gw * 0.5, gy = cy0 + ((i / 2) | 0) * gh * 0.5;
+        ctx.fillRect(gx, gy, gw * 0.72, 1.6);
+        ctx.fillRect(gx + gw * 0.16, gy, 1.6, gh * 0.6);
+      }
+    }
+  }
+  // 每皮砖整体色差：砌的时候就是一式一色，六百年后整层偏青／偏赭都很常见。
+  // 这是远景唯一还能把"砌"读出来的大尺度信息，比逐砖随机有用得多。
+  for (let r = 0; r < ROWS; r++) {
+    const y = r * bh, v = (rnd() - 0.5) * 0.22;
+    ctx.fillStyle = v > 0 ? `rgba(214,222,206,${v})` : `rgba(46,48,42,${-v})`;
+    ctx.fillRect(0, y, S, bh);
+  }
+  // 大尺度风化斑：水汽沿墙洇开的一片片深浅（2–4 m 见方），
+  // 逐砖随机在远处会被积分掉，这一层才留得住。
+  for (let i = 0; i < 12; i++) {
+    const x = rnd() * S, y = rnd() * S, r = S * (0.18 + rnd() * 0.3);
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    const dark = rnd() > 0.45;
+    g.addColorStop(0, dark ? 'rgba(40,44,36,0.20)' : 'rgba(226,224,208,0.16)');
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+  }
+  // 雨痕：顺墙而下的水渍（下部更重）
+  for (let i = 0; i < 26; i++) {
+    const x = rnd() * S, w = 2 + rnd() * 7, y0 = rnd() * S * 0.75;
+    const grd = ctx.createLinearGradient(0, y0, 0, S);
+    grd.addColorStop(0, 'rgba(60,58,48,0.02)');
+    grd.addColorStop(1, `rgba(52,54,44,${0.06 + rnd() * 0.12})`);
+    ctx.fillStyle = grd;
+    ctx.fillRect(x, y0, w, S - y0);
+  }
+  // 苔藓与草：根部沿缝、底部最盛
+  for (let i = 0; i < 70; i++) {
+    const x = rnd() * S, y = S * (0.45 + rnd() * 0.6), r = 3 + rnd() * 16;
+    ctx.fillStyle = `rgba(${84 + rnd() * 40 | 0},${104 + rnd() * 40 | 0},${62 + rnd() * 26 | 0},${0.1 + rnd() * 0.2})`;
+    ctx.beginPath(); ctx.ellipse(x, y, r, r * 0.5, rnd() * 3, 0, Math.PI * 2); ctx.fill();
+  }
+  for (let i = 0; i < 40; i++) {
+    const x = rnd() * S, y = S * (0.7 + rnd() * 0.32);
+    ctx.strokeStyle = `rgba(${96 + rnd() * 50 | 0},${118 + rnd() * 40 | 0},${70 + rnd() * 30 | 0},${0.35 + rnd() * 0.3})`;
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + (rnd() - 0.5) * 7, y - 3 - rnd() * 7); ctx.stroke();
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
+  return t;
+}
+
+/** 城砖砌体 —— 高度图（砖面微拱、缝内凹陷），再由它求法线 */
+export function makeWallBrickNormalMap(S = 256) {
+  if (typeof document === 'undefined') return null;
+  const c = canvas(S), ctx = c.getContext('2d');
+  const COLS = 10, ROWS = 10, bw = S / COLS, bh = S / ROWS, gap = Math.max(1.5, S / 150);
+  ctx.fillStyle = '#3a3a3a'; ctx.fillRect(0, 0, S, S);                 // 缝底
+  for (const [x, y, w, h] of brickRows(S, COLS, ROWS)) {
+    ctx.fillStyle = '#e8e8e8'; ctx.fillRect(x + gap, y + gap, w - gap * 2, h - gap * 2);
+    // 砖面轻微起拱（中间略高）
+    const g = ctx.createLinearGradient(0, y + gap, 0, y + h - gap);
+    g.addColorStop(0, 'rgba(255,255,255,0.2)');
+    g.addColorStop(0.5, 'rgba(255,255,255,0)');
+    g.addColorStop(1, 'rgba(0,0,0,0.35)');
+    ctx.fillStyle = g;
+    ctx.fillRect(x + gap, y + gap, w - gap * 2, h - gap * 2);
+  }
+  const t = new THREE.CanvasTexture(normalFromHeight(c, 3.2));
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
+}
+
+/** 墙脚条石勒脚（花岗岩／石灰岩）：块 ~1.2×0.6 m 叠砌，糙面錾痕 */
+export function makeWallStoneTexture(S = 256) {
+  if (typeof document === 'undefined') return null;
+  const c = canvas(S), ctx = c.getContext('2d');
+  const rnd = wallPrng(924113);
+  const COLS = 4, ROWS = 4;                    // 一格 2.4 m × 1.2 m → 单块 0.6×0.3 m
+  const bw = S / COLS, bh = S / ROWS, gap = Math.max(2, S / 90);
+  // 勒脚比墙身更耐风化、颜色更浅（花岗岩／石灰岩）：缝底也要浅，
+  // 否则勒脚在立面上压出一条黑腰带，整段墙看着像塌了底。
+  ctx.fillStyle = '#8f8a7c'; ctx.fillRect(0, 0, S, S);
+  for (const [x, y, w, h] of brickRows(S, COLS, ROWS, 4)) {
+    const v = 0.86 + rnd() * 0.26;
+    ctx.fillStyle = `rgb(${(196 * v) | 0},${(188 * v) | 0},${(172 * v) | 0})`;
+    ctx.fillRect(x + gap, y + gap, w - gap * 2, h - gap * 2);
+    // 花岗岩粗粒 + 錾凿痕
+    for (let i = 0; i < 220; i++) {
+      const a = 0.06 + rnd() * 0.16;
+      ctx.fillStyle = rnd() > 0.5 ? `rgba(255,255,255,${a})` : `rgba(0,0,0,${a})`;
+      ctx.fillRect(x + gap + rnd() * (w - gap * 2), y + gap + rnd() * (h - gap * 2), 1 + rnd() * 3, 1 + rnd() * 2);
+    }
+    ctx.strokeStyle = 'rgba(0,0,0,0.22)'; ctx.lineWidth = 1;
+    for (let i = 0; i < 3; i++) {
+      const yy = y + gap + rnd() * (h - gap * 2);
+      ctx.beginPath(); ctx.moveTo(x + gap, yy); ctx.lineTo(x + w - gap, yy); ctx.stroke();
+    }
+    ctx.fillStyle = 'rgba(0,0,0,0.2)';
+    ctx.fillRect(x + gap, y + h - gap - Math.max(1, gap * 0.7), w - gap * 2, Math.max(1, gap * 0.7));
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
+  return t;
+}
+
+/** 城顶：平砖竖砌散水（内低外高），常年踩踏磨光 → 灰暗、缝深、局部积水痕 */
+export function makeWallTopTexture(S = 256) {
+  if (typeof document === 'undefined') return null;
+  const c = canvas(S), ctx = c.getContext('2d');
+  const rnd = wallPrng(770215);
+  const COLS = 8, ROWS = 8;                    // 一格 1.6 m × 1.2 m，砖侧立 40×10 cm 排布
+  const bw = S / COLS, bh = S / ROWS, gap = Math.max(2, S / 110);
+  ctx.fillStyle = '#5f5c53'; ctx.fillRect(0, 0, S, S);       // 竖砖的深缝
+  for (const [x, y, w, h] of brickRows(S, COLS, ROWS, 2)) {
+    const v = 0.86 + rnd() * 0.22;
+    ctx.fillStyle = `rgb(${(158 * v) | 0},${(155 * v) | 0},${(143 * v) | 0})`;
+    ctx.fillRect(x + gap, y + gap, w - gap * 2, h - gap * 2);
+    // 侧立砖只有 10 cm 厚，正面窄：主要靠砖棱把行数读出来
+    ctx.fillStyle = 'rgba(255,250,236,0.13)';
+    ctx.fillRect(x + gap, y + gap, w - gap * 2, Math.max(1, gap * 0.6));
+    ctx.fillStyle = 'rgba(0,0,0,0.22)';
+    ctx.fillRect(x + gap, y + h - gap - Math.max(1, gap * 0.6), w - gap * 2, Math.max(1, gap * 0.6));
+    for (let i = 0; i < 60; i++) {
+      ctx.fillStyle = rnd() > 0.5 ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.09)';
+      ctx.fillRect(x + gap + rnd() * (w - gap * 2), y + gap + rnd() * (h - gap * 2), 2 + rnd() * 8, 2 + rnd() * 5);
+    }
+  }
+  // 踩踏磨光带 + 水渍
+  const g = ctx.createLinearGradient(0, 0, 0, S);
+  g.addColorStop(0, 'rgba(120,120,110,0.3)');
+  g.addColorStop(0.5, 'rgba(150,148,138,0.05)');
+  g.addColorStop(1, 'rgba(112,112,104,0.28)');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, S, S);
+  for (let i = 0; i < 18; i++) {
+    ctx.fillStyle = `rgba(70,72,62,${0.05 + rnd() * 0.09})`;
+    ctx.beginPath(); ctx.ellipse(rnd() * S, rnd() * S, 6 + rnd() * 26, 4 + rnd() * 14, rnd() * 3, 0, Math.PI * 2); ctx.fill();
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
   return t;
 }
 

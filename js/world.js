@@ -1,8 +1,11 @@
 // 地形：地面、山体、水面、道路、城墙
 import * as THREE from 'three';
 import { toV2, toV2List, mY, vU, hU, fbm, noise2, smoothstep as smooth, smoothPolyline, resample, distToPolyline, clamp } from './geo.js';
-import { RIVER, LAKES, ISLANDS, ROADS, MOUNTAINS, CITY_WALL, CITY_GATES, LANDMARKS } from './data.js';
-import { mat, UNIT, put, ribbonGeometry, polygonGeometry, QuadBuilder, makeGroundTexture, registerEnv } from './lib.js';
+import { RIVER, LAKES, ISLANDS, ROADS, MOUNTAINS, CITY_WALL, CITY_GATES, LANDMARKS, gateHalfLenM } from './data.js';
+import {
+  mat, UNIT, put, ribbonGeometry, polygonGeometry, QuadBuilder, registerEnv,
+  makeGroundTexture, makeWallBrickTexture, makeWallBrickNormalMap, makeWallStoneTexture, makeWallTopTexture,
+} from './lib.js';
 
 /* ==================== 高度场 ==================== */
 
@@ -318,29 +321,154 @@ export function buildRoads(extraLines = []) {
 
 /* ==================== 明城墙 ==================== */
 
-/**
- * 墙体洗墙灯带：沿每段墙的某一面，从 y0 到 y1 拉一条竖直窄带。
- * 段数与墙段一致（同一批 segs，城门处自然断开），一个 BufferGeometry 出全部灯带，
- * 不额外增加 draw call。
+/* ---------------- 墙体：连续剖面扫掠 ----------------
+ *
+ * 旧的城墙是「一串盒子」：每段墙一个独立 Box，摆在各自的方法线上。
+ * 两个必然后果——拐角处盒子互不相让，外墙角啃出一个个切口和凸榫；
+ * 底边一律压在 y=0，遇到有高差的地面就悬空或陷进地里。
+ *
+ * 现在整段墙是一次扫掠出来的连续带（sweep）：沿折线逐点求 miter 法向
+ * （拐角取相邻两段法向的加权平均，超出限幅时退化为斜接），
+ * 同一条剖面环一路推过去，接缝只在城门豁口处才断；墙基再按地形落,
+ * 于是墙是「长」在地面上的，不是「摆」在地上的。
  */
-function washStrip(segs, off, y0, y1) {
-  const n = segs.length;
-  const pos = new Float32Array(n * 12);
-  const uv = new Float32Array(n * 8);
-  const idx = new Uint32Array(n * 6);
-  segs.forEach((s, i) => {
-    const nx = -Math.cos(s.ang) * off, nz = Math.sin(s.ang) * off;
-    const ax = s.x0 + nx, az = s.z0 + nz, bx = s.x1 + nx, bz = s.z1 + nz;
-    pos.set([ax, y0, az, bx, y0, bz, bx, y1, bz, ax, y1, az], i * 12);
-    uv.set([0, 0, 1, 0, 1, 1, 0, 1], i * 8);
-    const o = i * 4;
-    idx.set([o, o + 1, o + 2, o, o + 2, o + 3], i * 6);
-  });
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
-  g.setIndex(new THREE.BufferAttribute(idx, 1));
-  return g;
+
+/** 墙体剖面（米）：t 沿墙厚方向（+t 朝城外），h 自墙基算起 */
+const WALL_H = 20;                 // 墙高（实测 14–21 m，取中）
+const WALL_BASE = 20;              // 底宽（实测 14–20 m）
+const WALL_TOP = 7;                // 顶宽（实测 4–9 m）
+const WALL_SINK = 1.5;             // 墙基埋入地面，杜绝悬空
+const TOP_RISE = 0.4;              // 城顶散水：内低外高，向城内排水
+const PLINTH_H = 1.3;              // 条石勒脚高
+const PLINTH_OUT = 0.45;           // 勒脚外挑（墙脚防水的那一圈石裙）
+/* 垛口：现存 13616 个垛 ÷ 现存 25.09 km 墙长 → 平均间距 1.84 m */
+const MERLON_PITCH = 1.84, MERLON_W = 0.95, MERLON_T = 0.55, MERLON_H = 1.8;
+
+/** 沿一段墙求「站」：miter 法向 + 沿线累计米数 + 地形高程 */
+function wallStations(run, cx, cz) {
+  // 一、逐段求法向（朝城外）
+  const segN = [];
+  for (let i = 0; i < run.length - 1; i++) {
+    let dx = run[i + 1][0] - run[i][0], dz = run[i + 1][1] - run[i][1];
+    const L = Math.hypot(dx, dz) || 1; dx /= L; dz /= L;
+    let nx = -dz, nz = dx;
+    if ((run[i][0] - cx) * nx + (run[i][1] - cz) * nz < 0) { nx = -nx; nz = -nz; }
+    segN.push({ dx, dz, nx, nz });
+  }
+  // 二、每个顶点取相邻两段法向之和（斜接 miter）再归一化 ——
+  //    拐角因此是一条连续的棱，而不是两个方盒互相啃出来的切口
+  const st = [];
+  for (let i = 0; i < run.length; i++) {
+    const k = Math.min(i, segN.length - 1);
+    const prev = k > 0 ? segN[k - 1] : segN[k], next = segN[k];
+    let nx = prev.nx + next.nx, nz = prev.nz + next.nz;
+    const L = Math.hypot(nx, nz) || 1; nx /= L; nz /= L;
+    if ((run[i][0] - cx) * nx + (run[i][1] - cz) * nz < 0) { nx = -nx; nz = -nz; }
+    st.push({ x: run[i][0], z: run[i][1], nx, nz, ang: Math.atan2(next.dx, next.dz), s: 0, y: 0 });
+  }
+  // 沿线累计（米）——UV 靠它，砖号才能 1:1 铺开
+  for (let i = 1; i < st.length; i++) {
+    st[i].s = st[i - 1].s + Math.hypot(st[i].x - st[i - 1].x, st[i].z - st[i - 1].z) * 100;
+  }
+  // 墙基随地形：与城门锚点用同一套算法（Math.max(0, terrain)），保证门与墙严丝合缝
+  for (const p of st) p.y = Math.max(0, terrainHeight(p.x, p.z)) - hU(WALL_SINK);
+  return st;
+}
+
+/** 把墙段端头吸附到城台侧面上。
+ *  墙段是绕着城门豁口切出来的，端头只会「离门大概 60 m」——而城台沿墙只有 ~24 m 宽，
+ *  于是墙头到城台侧面之间空出几十米，整圈墙看着是断了三截。
+ *  做法：以端点处的墙切向为轴，把端投影到「离门中心 ±城台半长」的位置（垂向偏移保留）。 */
+function snapRunEnds(pts, gates) {
+  if (pts.length < 2 || !gates.length) return pts;
+  const nearest = (p) => {
+    let best = null, bd = 0.9;                       // 0.9 单位 ≈ 90 m
+    for (const g of gates) {
+      const d = Math.hypot(p[0] - g.x, p[1] - g.z);
+      if (d < bd) { bd = d; best = g; }
+    }
+    return best;
+  };
+  const snap = (p, fromStart) => {
+    const g = nearest(p);
+    if (!g) return null;
+    const q = pts[fromStart ? 1 : pts.length - 2];
+    let dx = q[0] - p[0], dz = q[1] - p[1];
+    const L = Math.hypot(dx, dz) || 1; dx /= L; dz /= L;
+    const wx = p[0] - g.x, wz = p[1] - g.z;
+    const along = wx * dx + wz * dz;
+    const ox = wx - along * dx, oz = wz - along * dz;  // 端头不在线上时的侧向偏移
+    // 往城里（门里）多啃 40 cm：端头埋进城台侧面，既不露缝也不共面打架
+    const s = (along >= 0 ? 1 : -1) * (g.h + hU(0.4));
+    return [g.x + ox + dx * s, g.z + oz + dz * s];
+  };
+  const a = snap(pts[0], true), b = snap(pts[pts.length - 1], false);
+  const out = a ? [a, ...pts] : pts.slice();
+  if (b) out.push(b);
+  // 去重：吸附后若与端点重合就别留两个点（零长段会让 miter 方向变脏）
+  const ded = [out[0]];
+  for (let i = 1; i < out.length; i++) {
+    if (Math.hypot(out[i][0] - ded[ded.length - 1][0], out[i][1] - ded[ded.length - 1][1]) > 1e-4) ded.push(out[i]);
+  }
+  return ded;
+}
+
+/** 按沿线米数插值出站（垛口按 1.84 m 等距布点，站距本身是不均匀的） */
+function stationAtS(st, s) {
+  for (let i = 1; i < st.length; i++) {
+    if (st[i].s >= s || i === st.length - 1) {
+      const a = st[i - 1], b = st[i];
+      const t = clamp((s - a.s) / Math.max(1e-6, b.s - a.s), 0, 1);
+      const nx = a.nx + (b.nx - a.nx) * t, nz = a.nz + (b.nz - a.nz) * t;
+      const L = Math.hypot(nx, nz) || 1;
+      // 朝向沿用站点里存好的 ang（站上只有 nx/nz，没有 segN 的 dx/dz）
+      let da = b.ang - a.ang;
+      while (da > Math.PI) da -= Math.PI * 2;
+      while (da < -Math.PI) da += Math.PI * 2;
+      return {
+        x: a.x + (b.x - a.x) * t, z: a.z + (b.z - a.z) * t,
+        nx: nx / L, nz: nz / L, ang: a.ang + da * t,
+        y: a.y + (b.y - a.y) * t, s,
+      };
+    }
+  }
+  return st[0];
+}
+
+/** 在站内取一点：t/h 为剖面米数 */
+function stationPoint(s, t, h) {
+  return [s.x + s.nx * hU(t), s.y + vU(h), s.z + s.nz * hU(t)];
+}
+
+/** 面扫掠器：把剖面上的一条边沿整段墙连续铺开，顶点 UV 直接以「米」计 */
+class WallStrip {
+  constructor() { this.pos = []; this.uv = []; this.idx = []; }
+  /**
+   * 剖面顶点顺序已按外法线定死（外壁自上而下、内壁自下而上、城顶由内向外），
+   * 所以这里不用事后翻面：u=沿线米、v=高度米，贴图按真实砖号 1:1 铺，墙再长也拉不花。
+   */
+  face(stations, ta, ha, tb, hb, uvU, uvV) {
+    const base = this.pos.length / 3;
+    for (let i = 0; i < stations.length - 1; i++) {
+      const s = stations[i], s2 = stations[i + 1];
+      const u0 = s.s * uvU, u1 = s2.s * uvU, v0 = ha * uvV, v1 = hb * uvV;
+      this.pos.push(...stationPoint(s, ta, ha), ...stationPoint(s, tb, hb),
+        ...stationPoint(s2, tb, hb), ...stationPoint(s2, ta, ha));
+      this.uv.push(u0, v0, u0, v1, u1, v1, u1, v0);
+      const o = base + i * 4;
+      this.idx.push(o, o + 1, o + 2, o, o + 2, o + 3);
+    }
+    return this;
+  }
+  build() {
+    if (!this.pos.length) return null;
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(this.uv, 2));
+    g.setIndex(this.idx);
+    g.computeVertexNormals();
+    return g;
+  }
 }
 
 export function buildWall() {
@@ -349,50 +477,98 @@ export function buildWall() {
   const poly = smoothPolyline(toV2List(CITY_WALL), 7);
   const closed = poly.concat([poly[0]]);
   const gatePts = CITY_GATES.map((gt) => toV2(gt.lon, gt.lat));
-  // 距城门多近算豁口：门洞本身约 40 m，两侧再加护坡，取 ±60 m
+  // 城台沿墙半长（米）——墙段端头按它吸附，垛口也按它让位
+  const gateInfo = CITY_GATES.map((gt, i) => ({
+    x: gatePts[i][0], z: gatePts[i][1], h: hU(gateHalfLenM(gt)),
+  }));
+  // 距城门多近算豁口：城台沿墙还不到 30 m，切 60 m 是为了让城台两侧各有余量
   const GATE_OPEN = 0.6;
   const nearGate = (x, z) => gatePts.some((q) => Math.hypot(x - q[0], z - q[1]) < GATE_OPEN);
-  const segs = [];
+  // 垛口让位用精确边界（比 GATE_OPEN 贴得更近，墙头到城台之间不留空档）
+  const onGate = (x, z) => gateInfo.some((g) => Math.hypot(x - g.x, z - g.z) < g.h);
+
+  // 环心：用来判定「哪一侧是城外」，墙厚方向 +t 一律朝城外
+  let cx = 0, cz = 0;
+  for (const p of closed) { cx += p[0]; cz += p[1]; }
+  cx /= closed.length; cz /= closed.length;
+
+  // 按城门豁口把整圈墙切成若干连续段（run），段内一条带到底，只段间接在城门上
+  const runs = [];
+  let cur = [];
+  const flush = () => { if (cur.length > 1) runs.push(cur); cur = []; };
   for (let i = 0; i < closed.length - 1; i++) {
     const [x0, z0] = closed[i], [x1, z1] = closed[i + 1];
-    const len = Math.hypot(x1 - x0, z1 - z0);
-    if (len < 0.2) continue;
-    // 城门是墙上的「口」：门址附近的段跳过，主干道从豁口通过
-    if (nearGate((x0 + x1) / 2, (z0 + z1) / 2)) continue;
-    segs.push({ x0, z0, x1, z1, len, ang: Math.atan2(x1 - x0, z1 - z0) });
+    if (Math.hypot(x1 - x0, z1 - z0) < 0.2) continue;
+    if (nearGate((x0 + x1) / 2, (z0 + z1) / 2)) { flush(); continue; }
+    cur.push(closed[i]);
+  }
+  flush();
+  // 端头精确对接城台侧面（否则墙与城门之间空一截）
+  runs.forEach((r, i) => { runs[i] = snapRunEnds(r, gateInfo); });
+  const stations = runs.map((r) => wallStations(r, cx, cz));
+
+  const bh = WALL_BASE / 2, th = WALL_TOP / 2;
+  const brickB = new WallStrip(), stoneB = new WallStrip(), topB = new WallStrip(), bandB = new WallStrip();
+  for (const st of stations) {
+    // 外壁：外顶 → 外底（自上而下，法线才朝城外）；断面是梯形，外壁上收
+    brickB.face(st, th, WALL_H, bh, -WALL_SINK, 1 / 4, 1 / 2);
+    // 内壁：内底 → 内顶
+    brickB.face(st, -bh, -WALL_SINK, -th, WALL_H, 1 / 4, 1 / 2);
+    // 城顶散水：内低外高（平砖竖砌，向城内排水）
+    topB.face(st, -th, WALL_H - TOP_RISE, th, WALL_H + TOP_RISE, 1 / 1.6, 1 / 1.2);
+    // 条石勒脚：外挑 0.45 m 压住墙脚，一圈石裙
+    stoneB.face(st, bh + PLINTH_OUT, PLINTH_H, bh + PLINTH_OUT, -WALL_SINK, 1 / 2.4, 1 / 1.2);
+    stoneB.face(st, -(bh + PLINTH_OUT), -WALL_SINK, -(bh + PLINTH_OUT), PLINTH_H, 1 / 2.4, 1 / 1.2);
+    // 夜间洗墙灯带：贴着墙面上部（离顶 0.3–3.2 m），随墙身倾斜
+    const fT = (0.3 + WALL_H) / (WALL_H + WALL_SINK), fB = (3.2 + WALL_H) / (WALL_H + WALL_SINK);
+    for (const side of [1, -1]) {
+      const t0 = side * (th + (bh - th) * fT) + side * 0.07;
+      const t1 = side * (th + (bh - th) * fB) + side * 0.07;
+      bandB.face(st, t0, WALL_H - 0.3, t1, WALL_H - 3.2, 1 / 4, 1 / 2);
+    }
   }
 
-  const wallMat = mat('#8f8577', { rough: 0.95, env: 0.5 });
-  // 尺度按 spec 实测：墙体高约 14–26 m（取 20 m）、底宽约 10–18 m（取 20 m 含基础外扩）、雉堞高 1.8 m。
-  // 旧版写成 wallH=2.6 / wallW=1.9 个场景单位＝78 m 高、190 m 宽，
-  // 相当于一条 190 m 宽的巨型夯土垄横穿主城——沿途楼群必然被它吞掉，穿模由此而来。
-  const wallH = vU(20), wallW = hU(20);
-  const body = new THREE.InstancedMesh(UNIT.box, wallMat, segs.length);
-  const merlonMat = mat('#9a9082', { rough: 0.95, env: 0.5 });
-  const merlonCount = segs.length * 3;
-  const merlons = new THREE.InstancedMesh(UNIT.box, merlonMat, merlonCount);
+  // 材质：城砖（含法线，砖缝有起伏）、墙脚条石、城顶甃砖。
+  // 有贴图时 color 只当染色用，一律给接近中性的浅色——早先砖色 × 深底色的乘法
+  // 把墙面压到亮度 ~50，白天看着就是一块黑；现在贴图自带砖色，墙面与草地同一档。
+  const brickTex = makeWallBrickTexture(), brickNrm = makeWallBrickNormalMap();
+  const wallMat = mat('#ffffff', { rough: 0.94, env: 0.45, map: brickTex, normalMap: brickNrm });
+  const topMat = mat('#e2dccb', { rough: 0.92, env: 0.4, map: makeWallTopTexture() });
+  const stoneMat = mat('#ded7c6', { rough: 0.9, env: 0.4, map: makeWallStoneTexture() });
+  const merlonMat = mat('#bdb6a5', { rough: 0.94, env: 0.45 });
+
+  for (const [g, m] of [[brickB.build(), wallMat], [topB.build(), topMat], [stoneB.build(), stoneMat]]) {
+    if (!g) continue;
+    const mesh = new THREE.Mesh(g, m);
+    mesh.castShadow = mesh.receiveShadow = true;
+    group.add(mesh);
+  }
+
+  // 垛口：按实测间距 1.84 m（= 现存 13616 个垛 ÷ 25.09 km 墙长）等距布垛
   const dummy = new THREE.Object3D();
+  let merlonN = 0;
+  for (const st of stations) merlonN += Math.max(0, st[st.length - 1].s) / MERLON_PITCH;
+  const merlons = new THREE.InstancedMesh(UNIT.box, merlonMat, Math.ceil(merlonN) + runs.length);
   let mi = 0;
-
-  segs.forEach((s, i) => {
-    dummy.position.set((s.x0 + s.x1) / 2, 0, (s.z0 + s.z1) / 2);
-    dummy.rotation.set(0, s.ang, 0);
-    dummy.scale.set(wallW, wallH, s.len * 1.02);
-    dummy.updateMatrix();
-    body.setMatrixAt(i, dummy.matrix);
-
-    const n = 3, step = s.len / n;
-    for (let k = 0; k < n; k++) {
-      const f = (k + 0.5) / n;
-      const px = s.x0 + (s.x1 - s.x0) * f, pz = s.z0 + (s.z1 - s.z0) * f;
-      if (nearGate(px, pz)) continue;   // 雉堞同样给城门让位
-      dummy.position.set(px, wallH, pz);
-      dummy.rotation.set(0, s.ang, 0);
-      dummy.scale.set(wallW * 0.62, vU(1.8), step * 0.5);
+  for (const st of stations) {
+    const sEnd = st[st.length - 1].s;
+    for (let sp = 0; sp <= sEnd; sp += MERLON_PITCH) {
+      const p = stationAtS(st, sp);
+      if (onGate(p.x, p.z)) continue;                       // 垛口同样给城门让位
+      dummy.position.set(
+        p.x + p.nx * hU(th - MERLON_T / 2), p.y + vU(WALL_H + MERLON_H / 2 - TOP_RISE), p.z + p.nz * hU(th - MERLON_T / 2),
+      );
+      dummy.rotation.set(0, p.ang, 0);
+      dummy.scale.set(hU(MERLON_T), vU(MERLON_H), hU(MERLON_W));
       dummy.updateMatrix();
       merlons.setMatrixAt(mi++, dummy.matrix);
     }
-  });
+  }
+  merlons.count = mi;
+  merlons.instanceMatrix.needsUpdate = true;
+  merlons.castShadow = merlons.receiveShadow = true;
+  group.add(merlons);
+
   // 夜间亮化：墙身两面连续洗墙灯带 + 墙体泛光。
   // 灯带做在墙面上而非墙顶：从街上看是一道贴着墙走的暖光，从空中看是墙线亮边；
   // 泛光用材质 emissive（不参与光照计算，仅随 night 因子起落），
@@ -400,16 +576,17 @@ export function buildWall() {
   const lightMat = new THREE.MeshBasicMaterial({
     color: 0xffbe70, transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide,
   });
-  const y0 = wallH - vU(3.4), y1 = wallH - vU(0.5);
+  const band = bandB.build();
   const lights = new THREE.Group();
   lights.name = 'wallLights';
-  for (const dir of [1, -1]) {
-    const mesh = new THREE.Mesh(washStrip(segs, (dir * wallW) / 2 + dir * 0.05, y0, y1), lightMat);
+  if (band) {
+    const mesh = new THREE.Mesh(band, lightMat);
     mesh.frustumCulled = false;
     lights.add(mesh);
   }
   group.add(lights);
-  const floodMats = [wallMat, merlonMat];
+
+  const floodMats = [wallMat, merlonMat, stoneMat, topMat];
   const FLOOD = new THREE.Color('#6b5a3c');
   function setNight(k) {
     const n = clamp(k, 0, 1);
@@ -420,12 +597,7 @@ export function buildWall() {
     }
   }
 
-  body.count = segs.length;
-  merlons.count = mi;
-  body.instanceMatrix.needsUpdate = true;
-  merlons.instanceMatrix.needsUpdate = true;
-  body.castShadow = merlons.castShadow = true;
-  body.receiveShadow = merlons.receiveShadow = true;
-  group.add(body, merlons);
-  return { group, polygon: closed, mats: [wallMat, merlonMat], glow: lights, glowMat: lightMat, setNight };
+  // ends 只给自检脚本用：拿墙段两端去比对最近城门的半长，看有没有接歪 / 接不上
+  const ends = runs.map((r) => ({ a: r[0], b: r[r.length - 1] }));
+  return { group, polygon: closed, mats: floodMats, glow: lights, glowMat: lightMat, setNight, ends };
 }

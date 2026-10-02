@@ -954,6 +954,7 @@ function loop() {
   // （二者可组合，便于分享"某时刻 + 某处"的链接，也便于无交互地截图自检）
   let lmParam = 'zifeng';
   let gateParam = '';
+  let camParam = '';
   let openFlight = true;
   try {
     const q = new URLSearchParams(location.search);
@@ -966,6 +967,8 @@ function loop() {
     if (q.get('lm') !== null) lmParam = q.get('lm');
     // ?gate=神策门 —— 城门视角（现/复建门看见城台券门，遗址门看见豁口与文保台基）
     if (q.get('gate')) gateParam = q.get('gate');
+    // 调试机位 ?cam=<lon>,<lat>,<高m>,<视距?> —— 临时用于贴脸看墙面材质
+    if (q.get('cam')) camParam = q.get('cam');
   } catch (e) {}
 
   // 城门视角：站在城内一侧（城心→门位的反向），视线压住券门，
@@ -980,8 +983,18 @@ function loop() {
       gateSel.urn ? 4.2 : 3, 38, Math.atan2(-gx / L, -gz / L));
     openFlight = false;
   }
+  let camSel = false;
+  if (camParam) {
+    const c = camParam.split(',').map(Number);
+    if (c.length === 6 && c.every(Number.isFinite)) {
+      const [cx, cz] = toV2(c[0], c[1]);
+      placeCamera(new THREE.Vector3(cx, c[2], cz), c[3], c[4], (c[5] * Math.PI) / 180);
+      openFlight = false;
+      camSel = true;
+    }
+  }
   if (openFlight) flyTo(new THREE.Vector3(0, 4, 0), 420, 46, Math.PI * 0.28, 2600);
-  if (lmParam !== 'none' && !gateSel) setTimeout(() => selectById(lmParam, true), 700);
+  if (lmParam !== 'none' && !gateSel && !camSel) setTimeout(() => selectById(lmParam, true), 700);
   // 带参数打开的是"某时刻 + 某处"的直达链接：开场遮罩直接撤掉，不做淡出，
   // 打开即所见（也让无交互截图自检拿到的就是最终画面）
   const direct = !!gateSel || lmParam !== 'zifeng' || location.search.length > 1;
