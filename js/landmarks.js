@@ -7,7 +7,7 @@
 //   footU(m) 单体截面：与竖向同比例 —— 仅用于**单件竖立物**（塔、楼、碑、华表、单体大殿）的自身平面，
 //             使其长宽比不失真。凡有明确轴线/超大平台的组群一律用 hU，避免同一组内两套比例尺打架。
 //
-// 每个构建器都应保证：group 的最高点相对地面 <=> data.js 中 heightM（米）/ 30。
+// 每个构建器都应保证：最高点相对地面 <=> heightM / metersPerUnit（默认 30；城墙体系的门同为 30——门体等比 1:30）。
 // tools/smoke.mjs 会逐项对照顶点最高点，误差超过 8% 即报警。
 //
 // 中式屋顶全部改用 arch.js 的高保真构件（举折/反宇/翼角高度场 + 正脊/戗脊/正吻/斗拱/须弥座），
@@ -15,9 +15,12 @@
 
 import * as THREE from 'three';
 import { toV2, toV2List, vU, hU, footU, bearingToRot, makeRandom, clamp } from './geo.js';
-import { LANDMARKS, RIVER } from './data.js';
-import { UNIT, mat, mergeStaticMeshes } from './lib.js';
+import { LANDMARKS, RIVER, CITY_GATES } from './data.js';
+import { UNIT, mat, mergeStaticMeshes, registerEnv } from './lib.js';
 import { terrainHeight } from './world.js';
+import { buildZifeng } from './zifeng.js';
+import { buildZhonghuamen } from './zhonghuamen.js';
+import { gateFrame } from './wall-layout.js';
 import {
   hipRoof, gableHipRoof, gableRoof, pedestal, chineseHall, storiedPavilion,
 } from './arch.js';
@@ -625,6 +628,7 @@ export const BUILDERS = {
   /* ===== 紫峰大厦 450 m / 屋顶 381 m / 塔尖 69 m / 裙房 44 m / 副楼 99.5 m =====
      主楼采用 OSM 实测的「切角三角」平面，逐段收分；裙房/副楼亦用真实轮廓。 */
   supertall(lm) {
+    if (lm.id === 'zifeng') return buildZifeng(lm);
     const p = lm.params;
     const g = new THREE.Group();
     const [cx, cz] = toV2(lm.lon, lm.lat);
@@ -1129,38 +1133,12 @@ export const BUILDERS = {
     return g;
   },
 
-  /* ===== 中华门瓮城：118 × 128 m，三道内瓮城 · 四道券门 · 27 藏兵洞 ===== */
+  /* ===== 中华门现状：等比米制，真实券洞、三院四门、双层城台及 27 藏兵洞 ===== */
   citygate(lm) {
-    const p = lm.params;
-    const g = new THREE.Group();
-    const Wm = p.w, Dm = p.d;
-    const W = hU(Wm), D = hU(Dm), H = vU(p.wallH);
-    const bodyH = H - vU(2.0);
-    const bandH = vU(0.4);
-    const merlonH = vU(1.6);
-    const stone = M_STONE();
-    addBox(g, stone, 0, 0, 0, W, bodyH, D);
-    addBox(g, mat(C.stoneD, { rough: 0.96 }), 0, bodyH, 0, W * 0.96, bandH, D * 0.96);
-    const nMerlon = Math.max(2, Math.round(Wm / 2.6));
-    for (let i = 0; i <= nMerlon; i++) {
-      const x = -W / 2 + (i / nMerlon) * W;
-      for (const sz of [-1, 1]) {
-        addBox(g, stone, x, bodyH + bandH, sz * (D / 2 - footU(2.4)), footU(2.0), merlonH, footU(3.0));
-      }
-    }
-    const arch = mat('#3a3a36', { rough: 1 });
-    for (let i = 0; i < p.vaults; i++) {
-      const z = -D / 2 + ((i + 0.5) / p.vaults) * D;
-      addBox(g, arch, 0, 0, z, footU(9), vU(11), (D * 0.9) / p.vaults);
-    }
-    const perSide = Math.ceil(p.tunnels / 2);
-    for (let i = 0; i < p.tunnels; i++) {
-      const side = i % 2 ? 1 : -1;
-      const row = Math.floor(i / 2);
-      const x = side * (W / 2 - footU(2));
-      const z = -D / 2 + footU(24) + row * ((D * 0.86) / perSide);
-      addBox(g, arch, x, vU(4 + (row % 3) * 5), z, footU(2), vU(3.2), footU(4));
-    }
+    const g = buildZhonghuamen();
+    const gt = CITY_GATES.find(gate => gate.name === '中华门') || lm;
+    const frame = gateFrame(gt);
+    g.rotation.y = Math.atan2(frame.normal[0], frame.normal[1]) + (frame.zOut < 0 ? Math.PI : 0);
     return g;
   },
 
@@ -1200,15 +1178,75 @@ export const BUILDERS = {
       addBox(g, flagMat, 0, yFlag, sz + footU(9), footU(7), flagH, footU(0.6));
       for (const sx of [-1, 1]) addBox(g, flagMat, sx * footU(13.5), yFlag, sz, footU(0.6), flagH, footU(7));
     }
+    // 桥灯：21 对灯柱保留，42 颗暖白灯球合并为单个 InstancedMesh（夜里 emissive 渐亮）
+    const postMat = mat('#e6e9ea', { rough: 0.7 });
+    const lampMat = new THREE.MeshStandardMaterial({ color: 0xfff0d0, emissive: 0xffcf82, emissiveIntensity: 0.06, roughness: 0.4 });
+    registerEnv(lampMat, 0.5);
+    const lampMesh = new THREE.InstancedMesh(new THREE.SphereGeometry(0.08, 8, 6), lampMat, 42);
+    lampMesh.userData.noMerge = true;        // 合批会把实例逐个烘焙冻结，动不得
+    lampMesh.castShadow = false;
+    const lampDummy = new THREE.Object3D();
+    let li = 0;
     for (let i = 0; i <= 20; i++) {
+      const z = -L / 2 + (i / 20) * L;
       for (const sx of [-1, 1]) {
-        const z = -L / 2 + (i / 20) * L;
-        addCyl(g, mat('#e6e9ea', { rough: 0.7 }), sx * footU(p.roadW * 0.45), vU(p.deckH + 3), z, 0.04, vU(9), 6);
-        const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.08, 8, 6), new THREE.MeshBasicMaterial({ color: 0xfff0d0 }));
-        lamp.position.set(sx * footU(p.roadW * 0.45), vU(p.deckH + 12), z);
-        g.add(lamp);
+        addCyl(g, postMat, sx * footU(p.roadW * 0.45), vU(p.deckH + 3), z, 0.04, vU(9), 6);
+        lampDummy.position.set(sx * footU(p.roadW * 0.45), vU(p.deckH + 12), z);
+        lampDummy.updateMatrix();
+        lampMesh.setMatrixAt(li++, lampDummy.matrix);   // 构建期写满 42 个初始矩阵
       }
     }
+    g.add(lampMesh);
+
+    /* ---- 下层铁路双线对向列车：铁路面底 vU(deckH-14)、厚 vU(4)，轨面 = vU(deckH-10) + 轨道结构 vU(0.6) ---- */
+    const RAIL_TOP = vU(p.deckH - 14) + vU(4) + vU(0.6);
+    const trainMat = mat('#c8ccd2', { rough: 0.4, metal: 0.3 });
+    const winMat = new THREE.MeshStandardMaterial({ color: 0x2a3038, emissive: 0xffe9b0, emissiveIntensity: 0.05 });
+    registerEnv(winMat, 0.5);
+    const CARS = 10, CAR_GAP = 27 / p.mainSpan;   // 车间距 27 m 折算成全桥参数
+    const wrap01 = (v) => ((v % 1) + 1) % 1;
+    const carDummy = new THREE.Object3D();
+    const mkTrainMesh = (material, w, h, len) => {
+      const m = new THREE.InstancedMesh(UNIT.box.clone(), material, CARS);
+      m.userData.noMerge = true;          // 动体：合批会逐实例烘焙冻结
+      m.frustumCulled = false;            // 实例整体包围盒不随动画更新
+      m.castShadow = false;               // shadowMap 按需刷新，动体影子会冻在旧位置
+      m.userData.dims = [w, h, len];
+      g.add(m);
+      return m;
+    };
+    // 双线对向：横向 ±footU(2) 错开（railW 14 m 桥面容纳两条 3.4 m 车宽的线）
+    const tracks = [
+      { off: footU(2), dir: 1, phase: 0.0, body: mkTrainMesh(trainMat, footU(3.4), vU(4.2), hU(25)), win: mkTrainMesh(winMat, footU(3.5), vU(1.1), hU(22)) },
+      { off: -footU(2), dir: -1, phase: 0.5, body: mkTrainMesh(trainMat, footU(3.4), vU(4.2), hU(25)), win: mkTrainMesh(winMat, footU(3.5), vU(1.1), hU(22)) },
+    ];
+    const placeTrain = (tr) => {
+      for (let i = 0; i < CARS; i++) {
+        const ti = wrap01(tr.phase - tr.dir * i * CAR_GAP);   // 车头在前，后车按间距 27 m 跟随
+        carDummy.position.set(tr.off, RAIL_TOP, -L / 2 + ti * L);
+        carDummy.rotation.set(0, tr.dir < 0 ? Math.PI : 0, 0);
+        carDummy.scale.set(tr.body.userData.dims[0], tr.body.userData.dims[1], tr.body.userData.dims[2]);
+        carDummy.updateMatrix();
+        tr.body.setMatrixAt(i, carDummy.matrix);
+        carDummy.position.y = RAIL_TOP + vU(2.2);             // 窗带落在车身上半
+        carDummy.scale.set(tr.win.userData.dims[0], tr.win.userData.dims[1], tr.win.userData.dims[2]);
+        carDummy.updateMatrix();
+        tr.win.setMatrixAt(i, carDummy.matrix);
+      }
+      tr.body.instanceMatrix.needsUpdate = true;
+      tr.win.instanceMatrix.needsUpdate = true;
+    };
+    tracks.forEach(placeTrain);           // 构建期先按 t=0 摆好全部初始矩阵
+    g.userData.tick = (t, dt) => {
+      for (const tr of tracks) {
+        tr.phase = wrap01(tr.phase + dt * 0.016 * tr.dir);    // 全桥 ~62.5 s ≈ 90 km/h，匀速循环
+        placeTrain(tr);
+      }
+    };
+    g.userData.setNight = (k) => {
+      lampMat.emissiveIntensity = 0.06 + k * 3.6;   // 桥灯暖白（只动强度，不动色相）
+      winMat.emissiveIntensity = 0.05 + k * 2.2;    // 车窗灯带
+    };
     return g;
   },
 
@@ -1527,7 +1565,7 @@ function exclusionRadius(lm) {
     case 'mausoleum': return 8.0;
     case 'tomb': return 8.2;
     case 'oldtown': return 5.2;
-    case 'citygate': return Math.max(hU(128) * 0.62, 3.8);
+    case 'citygate': return footU(Math.hypot(118.5 / 2, 128) + 6);   // 门体等比 1:30,占地随体量
     case 'trussbridge': return 0;
     case 'eyebridge': return 0;
     case 'stadium': return Math.max(hU(p.bowlR || 130) * 2.0, 6);
@@ -1562,7 +1600,8 @@ export function buildLandmarks({ merge = true } = {}) {
       built = builder(lm, { x, z, groundY });
       g.add(built);
     }
-    g.position.set(x, Math.max(0, groundY - 0.05), z);
+    // 等比城门与同高城墙落在平地 y=-0.05；旧有其它地标仍沿用其原基准。
+    g.position.set(x, lm.model === 'citygate' ? Math.max(-0.05, groundY - 0.05) : Math.max(0, groundY - 0.05), z);
     group.add(g);
     g.updateMatrixWorld(true);
 
@@ -1591,7 +1630,8 @@ export function buildLandmarks({ merge = true } = {}) {
       group: g,
       pos: new THREE.Vector3(x, Math.max(0, groundY), z),
       top,
-      modelH: Math.max(modelTop, 0) * 30,
+      modelH: Math.max(modelTop, 0) * (built?.userData.metersPerUnit || 30),
+      metersPerUnit: built?.userData.metersPerUnit || 30,
       heightM: lm.heightM || 0,
       labelY: top + 1.2,
       floaters: built && built.userData.boat ? [built.userData.boat] : [],

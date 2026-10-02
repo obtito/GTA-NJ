@@ -28,6 +28,18 @@ export function mat(hex, opts = {}) {
   return m;
 }
 
+/* ---------------- 照片级贴图加载（Poly Haven CC0，assets/textures/） ---------------- */
+let _texLoader = null;
+export function loadTexture(url, { srgb = true, aniso = 4 } = {}) {
+  if (typeof document === 'undefined') return null;   // node 环境（tools/smoke.mjs）无 TextureLoader，直接返回 null
+  if (!_texLoader) _texLoader = new THREE.TextureLoader();
+  const t = _texLoader.load(url);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = aniso;
+  return t;
+}
+
 /* ---------------- 程序化贴图 ---------------- */
 function canvas(size) {
   const c = document.createElement('canvas');
@@ -695,4 +707,140 @@ export function put(parent, geo, material, { pos = [0, 0, 0], scale = [1, 1, 1],
   m.rotation.set(rotX, rot, rotZ);
   parent.add(m);
   return m;
+}
+
+/* ==================== 道路铺装 ====================
+ * 沥青／标线／人行道一起才叫「一比一」：
+ * 车道线宽 15 cm、虚线 4 m 划 + 6 m 空，这些尺寸都得落到贴图上。 */
+
+/** 车行道沥青：粗骨料露石 + 轮辙 + 纵向接缝 + 补丁 */
+export function makeAsphaltTexture(S = 512) {
+  if (typeof document === 'undefined') return null;
+  const c = canvas(S), ctx = c.getContext('2d');
+  const rnd = wallPrng(551207);
+  ctx.fillStyle = '#3b3d41'; ctx.fillRect(0, 0, S, S);
+
+  // 粗骨料：露在外面的集料颗粒决定沥青的「砂感」，没有它贴图会糊成塑料板
+  for (let i = 0; i < 26000; i++) {
+    const x = rnd() * S, y = rnd() * S, r = 0.6 + rnd() * 2.1;
+    const v = 0.72 + rnd() * 0.5;
+    ctx.fillStyle = 'rgba(' + ((88 * v) | 0) + ',' + ((90 * v) | 0) + ',' + ((92 * v) | 0) + ',' + (0.25 + rnd() * 0.5) + ')';
+    ctx.beginPath(); ctx.arc(x, y, r, 0, 6.2832); ctx.fill();
+  }
+  // 沥青胶结料斑：大尺度深浅不均
+  for (let i = 0; i < 26; i++) {
+    const x = rnd() * S, y = rnd() * S, r = S * (0.05 + rnd() * 0.14);
+    const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+    const dark = rnd() > 0.45;
+    g.addColorStop(0, dark ? 'rgba(20,21,24,0.30)' : 'rgba(120,122,126,0.20)');
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, 6.2832); ctx.fill();
+  }
+  /* 沥青贴图是 8 m × 8 m 一循环铺满整条路的（world.js：u = 沿线米/8，v = 横向米/8），
+   * 所以**任何周期性成分都会被铺成规则网格**，再在掠射角下与像素栅格打出摩尔纹 ——
+   * 表现就是路面上浮出一层层菱形/链条花纹（比真沥青显眼得多，一眼假）。
+   * 早先这里画了 1 条纵向摊铺缝 + 3 条横向接缝 + 两条固定位置的轮辙磨光带，
+   * 正好凑成 8 m / 2.7 m / 2.4 m 三个周期的网格。现在只留一条极淡的纵向缝，
+   * 其余交给**非周期**的信息：骨料、胶结料斑、补丁。 */
+  ctx.fillStyle = 'rgba(18,19,21,0.20)';
+  ctx.fillRect(0, 0, S * 0.006, S);
+  // 补丁：井盖周边补铺的方形块（城市道路上最多的一类小尺度信息）
+  for (let i = 0; i < 9; i++) {
+    const x = rnd() * S, y = rnd() * S, w = S * (0.05 + rnd() * 0.1), h = w * (0.5 + rnd() * 0.8);
+    ctx.fillStyle = 'rgba(58,60,64,0.5)'; ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = 'rgba(150,150,152,0.18)'; ctx.lineWidth = 1.5;
+    ctx.strokeRect(x + 1, y + 1, w - 2, h - 2);
+  }
+  // 大尺度深浅不均（非周期）：摊铺机一走一停留下的冷接缝区，比规则网格自然
+  for (let i = 0; i < 5; i++) {
+    const x = rnd() * S, y = rnd() * S, w = S * (0.25 + rnd() * 0.4), h = S * (0.12 + rnd() * 0.25);
+    const g = ctx.createLinearGradient(x, y, x, y + h);
+    g.addColorStop(0, 'rgba(0,0,0,0)');
+    g.addColorStop(0.5, 'rgba(14,15,17,' + (0.06 + rnd() * 0.10).toFixed(3) + ')');
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g; ctx.fillRect(x, y, w, h);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 8;
+  return t;
+}
+
+/** 车道标线：u 沿行车方向一循环 = 12 m（4 m 划 + 8 m 空），v 沿线宽方向 */
+export function makeLaneMarkTexture(S = 128, color = '#e8e6df') {
+  if (typeof document === 'undefined') return null;
+  const c = canvas(S), ctx = c.getContext('2d');
+  ctx.clearRect(0, 0, S, S);
+  const dash = S * (4 / 12);
+  ctx.fillStyle = color;
+  ctx.fillRect(0, S * 0.10, dash, S * 0.80);
+  // 磨损：标线用久了是斑驳的，整条纯白会像塑料
+  const rnd = wallPrng(88117);
+  for (let i = 0; i < 900; i++) {
+    const x = rnd() * dash, y = rnd() * S;
+    ctx.fillStyle = 'rgba(0,0,0,' + (0.10 + rnd() * 0.35) + ')';
+    ctx.fillRect(x, y, 1 + rnd() * 7, 1 + rnd() * 3);
+  }
+  ctx.fillStyle = 'rgba(0,0,0,0.14)';
+  ctx.fillRect(0, 0, dash, 2); ctx.fillRect(0, S - 3, dash, 3);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 8;
+  return t;
+}
+
+/** 人行道：灰色混凝土地砖 + 盲道条（距路缘连续，横条状提示块） */
+export function makeSidewalkTexture(S = 256) {
+  if (typeof document === 'undefined') return null;
+  const c = canvas(S), ctx = c.getContext('2d');
+  const rnd = wallPrng(330091);
+  ctx.fillStyle = '#a9a49b'; ctx.fillRect(0, 0, S, S);
+  const N = 4, cell = S / N, gap = Math.max(2, S / 110);
+  for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
+    const v = 0.9 + rnd() * 0.18;
+    ctx.fillStyle = 'rgb(' + ((176 * v) | 0) + ',' + ((173 * v) | 0) + ',' + ((166 * v) | 0) + ')';
+    ctx.fillRect(i * cell + gap, j * cell + gap, cell - gap * 2, cell - gap * 2);
+  }
+  for (let i = 0; i < 9000; i++) {
+    const x = rnd() * S, y = rnd() * S;
+    ctx.fillStyle = rnd() > 0.5 ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.08)';
+    ctx.fillRect(x, y, 1 + rnd() * 2, 1 + rnd() * 2);
+  }
+  // 盲道：贴图 x = 沿行车方向、y = 横向。导向盲道要沿行车方向连续、被横纹切断，
+  // 画成「沿 x 的通条 + 沿 y 的横纹」——早先画反了，纹路会变成横着爬的栅栏。
+  ctx.fillStyle = '#c8a449'; ctx.fillRect(0, S * 0.42, S, S * 0.16);
+  ctx.fillStyle = '#8d6f2e';
+  for (let y = S * 0.44; y < S * 0.57; y += S / 9) ctx.fillRect(0, y, S, S / 26);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 8;
+  return t;
+}
+
+/** 侧石立面：花岗岩条石，贴图横向 = 沿路 1 m 一块，纵向 = 侧石高度（上棱磨圆、底部积污） */
+export function makeCurbTexture(S = 128) {
+  if (typeof document === 'undefined') return null;
+  const c = canvas(S), ctx = c.getContext('2d');
+  const rnd = wallPrng(66123);
+  ctx.fillStyle = '#8d8779'; ctx.fillRect(0, 0, S, S);
+  const N = 6, w = S / N;
+  for (let i = 0; i < N; i++) {
+    const v = 0.9 + rnd() * 0.2;
+    ctx.fillStyle = 'rgb(' + ((158 * v) | 0) + ',' + ((152 * v) | 0) + ',' + ((140 * v) | 0) + ')';
+    ctx.fillRect(i * w + 1, 0, w - 2, S);
+    for (let k = 0; k < 40; k++) {
+      ctx.fillStyle = rnd() > 0.5 ? 'rgba(255,255,255,0.10)' : 'rgba(0,0,0,0.12)';
+      ctx.fillRect(i * w + rnd() * w, rnd() * S, 1 + rnd() * 6, 1 + rnd() * 3);
+    }
+    ctx.fillStyle = 'rgba(235,232,224,0.5)'; ctx.fillRect(i * w + 1, 0, w - 2, S * 0.14);
+    ctx.fillStyle = 'rgba(40,38,34,0.45)'; ctx.fillRect(i * w + 1, S * 0.82, w - 2, S * 0.18);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 8;
+  return t;
 }

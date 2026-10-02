@@ -78,7 +78,7 @@ console.log('--- 地标高度校验（模型顶点 vs data.js 实测高度）---
 console.log('（山峰/陵寝轴线/城墙这类以地形为基准的群组，几何顶面必然含自然地形抬升，标记为「组群」不做比对）');
 let warn = 0;
 for (const it of lm.items) {
-  const modelM = Math.max(vertexTop(it.group, it.group.position.y) * 30, 0);
+  const modelM = Math.max(vertexTop(it.group, it.group.position.y) * (it.metersPerUnit || 30), 0);
   const refM = it.heightM || 0;
   const isGroup = SLOPE.has(it.model);
   const tol = isGroup ? 999 : 0.08;
@@ -94,6 +94,16 @@ for (const it of lm.items) {
   );
 }
 console.log(warn ? '!! 共 ' + warn + ' 项超出 8% 容差' : '全部地标均与实测数据吻合（容差 8%）');
+
+// 地标逐帧动画与夜景分支（长江大桥列车 / 桥灯 / 航空障碍灯等）
+{
+  let ticked = 0, nighted = 0;
+  for (const it of lm.items) {
+    if (it.tick) { it.tick(1.2, 0.016); ticked++; }
+    if (it.setNight) { it.setNight(1); nighted++; }
+  }
+  console.log('地标动画钩子：tick=' + ticked + ' setNight=' + nighted);
+}
 
 console.log('');
 const grid = c.districtGridLines();
@@ -123,9 +133,24 @@ city.setNight(1);
 const trees = c.buildTrees({ exclusions: lm.exclusions });
 report('行道树', trees.group);
 
-const cars = c.buildCars(roads.centerlines, 60);
+const cars = await c.buildCars(roads.centerlines, 60);   // async:GLB 车模,node 下走方块回退分支
 cars.update(0.016, true);
+cars.setNight(1);              // 车灯分支：头灯带/尾灯带 emissiveIntensity 也要跑到
 report('车流', cars.group);
+
+// 主干道路灯（GTA-WH 夜景移植）：实例规模 + 夜间分支回归。
+// 阈值 w>=0.35 全部 13 条主干入选；跨江/夹江段按 distToPolyline 跳过。
+const lights = c.buildStreetLights(roads.centerlines, roads.surfaceAt);
+lights.setNight(1);
+report('路灯', lights.group);
+if (lights.count > 1000) console.log('路灯实例=' + lights.count + '（预期 ~2500，已跳过水域段）');
+else console.log('!! 路灯实例异常偏少：' + lights.count);
+
+// 中山码头—浦口轮渡：班轮往返，单步推进不抛、折返钳制生效
+const tr = await import('../js/transit.js');
+const ferry = tr.buildFerry();
+ferry.update(0.016);
+report('轮渡', ferry.group);
 
 console.log('');
 console.log('--- 城市级烘焙 AO（移植自 GTA_SZ）---');

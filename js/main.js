@@ -6,14 +6,17 @@ import {
   buildGround, buildMountains, createWaterMaterial, buildWater,
   buildRoads, buildWall, terrainHeight,
 } from './world.js';
-import { buildCity, buildTrees, buildCars, districtGridLines } from './city.js';
+import { buildCity, buildTrees, buildCars, buildStreetLights, districtGridLines } from './city.js';
 import { buildLandmarks } from './landmarks.js';
-import { buildGates, gateRoadLines } from './gates.js';
+import { buildGates, gateRoadLines, gateFrame } from './gates.js';
+import { buildFerry } from './transit.js';
+import { loadGLB } from './assets.js';
 import { createEnvironment } from './environment.js';
+import { createArchitecturalLightPool } from './architectural-lighting.js';
 import { collectOccluders, bakeCityAmbient, applyCityAmbient, setCityAmbientDirect } from './ambient.js';
 import { setEnvIntensity } from './lib.js';
-import { CATEGORIES, DISTRICTS, RIVER, CITY_WALL, CITY_GATES } from './data.js';
-import { toV2, toV2List, clamp, lerp, sunState, easeInOutCubic, vU } from './geo.js';
+import { CATEGORIES, DISTRICTS, RIVER, CITY_WALL, CITY_GATES, ROADS } from './data.js';
+import { toV2, toV2List, clamp, lerp, sunState, easeInOutCubic, vU, hU, M_PER_U_H } from './geo.js';
 
 /* ==================== DOM ==================== */
 const $ = (s) => document.querySelector(s);
@@ -31,7 +34,9 @@ const elTimeSlider = $('#timeSlider');
 /* ==================== 渲染器 / 场景 ==================== */
 let renderer, scene, camera, controls, sky, sunLight, hemi, ambient, waterMat;
 let moonLight, stars;
+let architecturalLights;
 let city, trees, cars, roads, waterGroup, gates, walls;
+let lights, ferry;
 let env = null;                       // 共享 HDR 环境（PMREM）
 let landmarkItems = [];
 let labelEls = [];
@@ -55,16 +60,17 @@ function initRenderer() {
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
   scene = new THREE.Scene();
+  architecturalLights = createArchitecturalLightPool(scene, { maxDistance: 26 });   // 门体 1:30 后取景距离放大,择近半径同步
   scene.fog = new THREE.Fog(0xd8e4ee, 320, 1100);
 
-  camera = new THREE.PerspectiveCamera(46, window.innerWidth / window.innerHeight, 0.5, 4000);
+  camera = new THREE.PerspectiveCamera(46, window.innerWidth / window.innerHeight, 0.015, 4000);
   camera.position.set(120, 130, 190);
 
   controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.06;
   controls.maxPolarAngle = Math.PI * 0.495;
-  controls.minDistance = 4;
+  controls.minDistance = .65;
   controls.maxDistance = 900;
   controls.target.set(0, 2, 0);
   controls.autoRotateSpeed = 0.32;
@@ -216,10 +222,11 @@ function applyTime(hours) {
   }
   if (city) city.setNight(night);
   if (cars) cars.setNight(Math.max(night, dusk * 0.4));
+  if (lights) lights.setNight(Math.max(night, dusk * 0.4));   // 路灯灯头，与车灯同口径黄昏先起
   if (roads) roads.glow.material.opacity = clamp(night * 0.55 + dusk * 0.18, 0, 0.7);
   // 城墙亮化：墙身两面连续洗墙灯带 + 墙体泛光，黄昏先起、入夜全亮（参考南京城墙现有夜景）
   if (walls && walls.setNight) walls.setNight(Math.max(night, dusk * 0.5));
-  if (gates) gates.setNight(Math.max(night, dusk * 0.5));   // 城台压顶灯带 + 城楼窗光
+  if (gates) gates.setNight(Math.max(night, dusk * 0.5));   // 压顶/券洞/檐口灯带与局部洗墙光
   if (landmarkItems) for (const it of landmarkItems) it.setNight && it.setNight(night);   // 地标夜景（窗光/冠缘发光）
 
   // 城市 AO 施加到直射光的份额：白天 0.30 / 黄昏 0.24 / 夜间 0（夜间只剩灯光，别再压暗）
@@ -264,7 +271,8 @@ async function build() {
     loadText.textContent = label + '……';
     loadBar.style.width = pct + '%';
     await new Promise((r) => setTimeout(r, 30));
-    const out = fn();
+    // await 兼容异步步骤（如 GLB 装载）；同步 fn 的返回值经 await 原样透传
+    const out = await fn();
     marks.push(label);
     return out;
   };
@@ -309,6 +317,7 @@ async function build() {
     scene.add(g.group);
     gates = g;   // 材质在 AO 烘焙阶段统一登记（见「烘焙城市环境光遮蔽」）
   }, 68);
+  architecturalLights.setRoots([walls.group, gates.group, lm.group]);
 
   await step('生成城市街区路网', () => {
     const grid = districtGridLines();
@@ -320,7 +329,7 @@ async function build() {
     return grid;
   }, 72);
 
-  await step('生长楼群与行道树', () => {
+  await step('生长楼群与行道树', async () => {
     city = buildCity({ exclusions: lm.exclusions });
     scene.add(city.group);
     city.setGrowth(0);
@@ -332,10 +341,61 @@ async function build() {
     scene.add(trees);
     aoTargets.wall.push(...t.mats);
 
-    cars = buildCars(roads.centerlines, 120);
+    cars = await buildCars(roads.centerlines, 120);   // Kenney 车模异步装载(node/失败回退方块)
     scene.add(cars.group);
     aoTargets.ground.push(...cars.mats);   // 车在街谷底部，吃最重的遮蔽
+
+    // 主干道路灯（移植 GTA-WH 夜景）：杆与灯头各一组实例，夜间一次 uniform 点亮全城
+    lights = buildStreetLights(roads.centerlines, roads.surfaceAt);
+    scene.add(lights.group);
+    console.log(`[GTA-NJ] 路灯：${lights.count} 根`);
+
+    // 中山码头—浦口 宁浦轮渡：江面往返班轮（独立于地标的观赏渔船）
+    ferry = buildFerry();
+    scene.add(ferry.group);
   }, 88);
+
+  await step('装载外部 GLB 资产', async () => {
+    // 外部资产管线演示（Draco 压缩 GLB）。场景水平 1:100，真实尺度的车小如指甲，
+    // 按车流的视觉语言归一到车长 ≈0.24 单位；等比缩放、不压 Y（城墙同款等比口径）。
+    // 注意：此步必须在首个 applyTime 之前 —— setEnvIntensity 有 |Δk|<0.004 早退，
+    // 晚注册的材质会停在未补偿的 base 值。
+    const car = await loadGLB('./assets/ferrari.glb', { pos: [23.7, 0.065, 12.9], rot: 0.6, scale: 0.05 });
+    if (car) console.log('[GTA-NJ] GLB 资产：ferrari.glb 已装载（新街口广场演示）');
+
+    // 中山路静态停车：Kenney 车贴路缘排开（归一到车流视觉语言 0.23 单位车长，等比不压 Y）
+    {
+      // 找主干道不能靠名字：中山路已并入「中山南路·中山北路」，按前缀取的同一条中心线
+      const zsl = ROADS.find((r) => r.name.startsWith('中山路'));
+      if (zsl) {
+      const [ax0, az0] = toV2(zsl.pts[1][0], zsl.pts[1][1]);    // 新街口北侧
+      const [ax1, az1] = toV2(zsl.pts[0][0], zsl.pts[0][1]);    // 向南排开
+      const dx = ax1 - ax0, dz = az1 - az0;
+      const seg = Math.hypot(dx, dz);
+      const ang = Math.atan2(dx, dz);                           // 与车流同向约定
+      const nx = dz / seg, nz = -dx / seg;                      // 路法向
+      const off = zsl.widthM / 2 / M_PER_U_H + 0.028;           // 贴路缘（红线外沿 + 半个车长）
+      const parked = ['sedan.glb', 'taxi.glb', 'suv.glb', 'van.glb', 'police.glb', 'hatchback-sports.glb', 'truck.glb', 'race.glb'];
+      let parkedOk = 0;
+      for (let i = 0; i < parked.length; i++) {
+        const t = 0.06 + i * 0.075;
+        const g = await loadGLB('./assets/cars/' + parked[i]);
+        if (!g) continue;
+        const b1 = new THREE.Box3().setFromObject(g);
+        const len = Math.max(b1.max.z - b1.min.z, b1.max.x - b1.min.x, 0.01);
+        g.scale.setScalar(0.23 / len);
+        g.rotation.y = ang;
+        g.updateMatrixWorld(true);
+        const b2 = new THREE.Box3().setFromObject(g);
+        const px = ax0 + dx * t + nx * off, pz = az0 + dz * t + nz * off;
+        g.position.set(px - (b2.max.x + b2.min.x) / 2, 0.06 - b2.min.y, pz - (b2.max.z + b2.min.z) / 2);
+        scene.add(g);
+        parkedOk++;
+      }
+      if (parkedOk) console.log(`[GTA-NJ] 中山路路边停车：${parkedOk} 台 Kenney 车`);
+      }
+    }
+  }, 98);
 
   await step('烘焙城市环境光遮蔽', () => {
     // 地标也参与遮挡：塔楼脚下、城门洞、巷子里的明暗差靠这张场
@@ -533,6 +593,16 @@ function placeCamera(targetPos, dist, polarDeg, azimuthRad) {
   camera.position.copy(targetPos).add(_off);
   camera.lookAt(targetPos);
   controls.update();
+}
+
+/** 城门视角落位：与模型共用墙外法向，按等比后的实际体量取景（?gate= 深链与巡检钩子共用）。
+ *  门体等比 1:30 后：机位抬高 vU(8)，视距按体量 ×3.33。 */
+function gotoGateView(gt) {
+  const [gx, gz] = toV2(gt.lon, gt.lat);
+  const fr = gateFrame(gt);
+  placeCamera(new THREE.Vector3(gx, Math.max(-.05, terrainHeight(gx, gz) - .05) + vU(8), gz),
+    gt.name === '中华门' ? 9.33 : gt.court ? 7 : 4.33, 68,
+    Math.atan2(fr.normal[0] * fr.zOut, fr.normal[1] * fr.zOut));
 }
 
 function updateAnim() {
@@ -913,6 +983,7 @@ function loop() {
   }
   if (waterMat) waterMat.uniforms.uTime.value = t;
   if (cars) cars.update(dt, cars.group.visible);
+  if (ferry) ferry.update(dt);
   flushHover();
 
   const animating = updateAnim();
@@ -940,6 +1011,7 @@ function loop() {
     frames = 0; acc = 0;
   }
 
+  architecturalLights.update(camera);
   renderer.render(scene, camera);
 }
 
@@ -971,16 +1043,11 @@ function loop() {
     if (q.get('cam')) camParam = q.get('cam');
   } catch (e) {}
 
-  // 城门视角：站在城内一侧（城心→门位的反向），视线压住券门，
-  // 距离 300m、俯角 38°——券门、城台压顶、雉堞、穿门道路（有瓮城的含错位折行）
-  // 与豁口同框；遗址门则看到分开两侧的台基、残垣与文保碑。
+  // 城门视角与模型共用墙外法向，按等比后的实际体量取景。
   const gateSel = CITY_GATES.find((g2) => g2.name === gateParam);
   if (gateSel) {
-    const [gx, gz] = toV2(gateSel.lon, gateSel.lat);
-    const L = Math.hypot(gx, gz) || 1;
     // 指定了城门就直接落位（不放开场动画），保证链接打开即所见
-    placeCamera(new THREE.Vector3(gx, Math.max(0, terrainHeight(gx, gz) + vU(12)), gz),
-      gateSel.urn ? 4.2 : 3, 38, Math.atan2(-gx / L, -gz / L));
+    gotoGateView(gateSel);
     openFlight = false;
   }
   let camSel = false;
@@ -995,6 +1062,42 @@ function loop() {
   }
   if (openFlight) flyTo(new THREE.Vector3(0, 4, 0), 420, 46, Math.PI * 0.28, 2600);
   if (lmParam !== 'none' && !gateSel && !camSel) setTimeout(() => selectById(lmParam, true), 700);
+
+  // 无头巡检钩子（tools/tour.mjs）：一页多 POI 免刷新导航。
+  // 用 placeCamera 而非 flyTo —— selectById 的方位角带随机，截图不可复现；
+  // 赋值先于遮罩收起，waitForSelector('#loading.done') 命中时 API 必已就绪。
+  // 无头自检用：射线查「某个坐标最上面那层是谁」。tools/roadcheck.mjs 的渲染复核靠它，
+  // 也是排查「路面被盖住」这类只能在 GPU 上复现的问题的唯一入口（射线走 CPU，看到的和
+  // 屏幕上的可以不一致 —— 地面遮住路面那次就是这么定位的）。
+  window.__njScene = scene;
+  window.__njTHREE = THREE;
+  window.__njCamera = camera;
+  window.__njTour = {
+    ready: true,
+    pois: [...landmarkItems.map((i) => i.id), ...CITY_GATES.map((g) => 'gate:' + g.name)],
+    setTime(h) {
+      autoTime = false;
+      $('#tgAuto').classList.remove('active');
+      applyTime(clamp(h, 0, 24));
+      elTimeSlider.value = h;
+    },
+    goto(id) {
+      $('#hint').classList.add('fade');   // 巡检不等 9 秒提示条淡出
+      if (id.startsWith('gate:')) {
+        const gt = CITY_GATES.find((g) => g.name === id.slice(5));
+        if (!gt) return false;
+        $('#infoCard').classList.add('hidden');
+        gotoGateView(gt);
+        return true;
+      }
+      const it = landmarkItems.find((i) => i.id === id);
+      if (!it) return false;
+      selectById(id, false);              // 信息卡 + 列表高亮，不播飞行
+      const dist = clamp(it.top * 3.2 + 16, 22, 120);   // 与 selectById 同取景公式，方位角固定
+      placeCamera(it.pos.clone().setY(it.pos.y + it.top * 0.45), dist, 62, 25 * Math.PI / 180);
+      return true;
+    },
+  };
   // 带参数打开的是"某时刻 + 某处"的直达链接：开场遮罩直接撤掉，不做淡出，
   // 打开即所见（也让无交互截图自检拿到的就是最终画面）
   const direct = !!gateSel || lmParam !== 'zifeng' || location.search.length > 1;

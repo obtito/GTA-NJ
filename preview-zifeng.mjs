@@ -1,126 +1,232 @@
 import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { BUILDERS } from './js/landmarks.js';
 import { LANDMARKS } from './js/data.js';
-import { toV2 } from './js/geo.js';
 
-const lm = LANDMARKS.find((l) => l.id === 'zifeng');
-const g = BUILDERS.supertall(lm);
-const [cx, cz] = toV2(lm.lon, lm.lat);
-g.position.set(cx, 0, cz);
-
+const lm = LANDMARKS.find((landmark) => landmark.id === 'zifeng');
+const building = BUILDERS.supertall(lm);
 const scene = new THREE.Scene();
-scene.background = new THREE.Color('#0a0e1a');          // 夜景底
-scene.add(g);
+scene.add(building);
 
-// 地面（夜间压暗）
+// Keep the individual building at the origin. Its model uses one common scale
+// for plan and height, independent of the city map's geographic placement.
+const bounds = new THREE.Box3().setFromObject(building);
+const size = bounds.getSize(new THREE.Vector3());
+const center = bounds.getCenter(new THREE.Vector3());
+const camera = new THREE.PerspectiveCamera(38, 1, 0.05, 600);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.08;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+renderer.domElement.setAttribute('aria-label', '紫峰大厦交互式三维模型');
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.07;
+controls.minDistance = 2;
+controls.maxDistance = 100;
+controls.maxPolarAngle = Math.PI * 0.49;
+controls.autoRotateSpeed = 0.6;
+controls.target.copy(center);
+
+// The large ground fades into the background; no visible platform edge or
+// oversized horizon distracts from the silhouette.
 const ground = new THREE.Mesh(
-  new THREE.PlaneGeometry(600, 600),
-  new THREE.MeshStandardMaterial({ color: '#2a3326', roughness: 1 }),
+  new THREE.PlaneGeometry(2000, 2000),
+  new THREE.MeshStandardMaterial({ color: '#d5dde0', roughness: 1 }),
 );
 ground.rotation.x = -Math.PI / 2;
-ground.position.set(cx, 0, cz);
+ground.position.y = bounds.min.y - 0.014;
 ground.receiveShadow = true;
 scene.add(ground);
+const ambient = new THREE.AmbientLight(0xddeaf4, 0.65);
+const hemi = new THREE.HemisphereLight(0xe0efff, 0x9fa9ad, 1.7);
+const key = new THREE.DirectionalLight(0xfff4e6, 2.8);
+key.position.set(22, 38, 25);
+key.castShadow = true;
+key.target.position.copy(center);
+key.shadow.mapSize.set(2048, 2048);
+Object.assign(key.shadow.camera, { left: -12, right: 12, top: 12, bottom: -12, near: 1, far: 90 });
+key.shadow.normalBias = 0.012;
+key.shadow.bias = -0.00008;
+scene.add(key.target);
+const fill = new THREE.DirectionalLight(0xb9d4f1, 0.8);
+fill.position.set(-24, 18, -18);
+scene.add(ambient, hemi, key, fill);
 
-const cam = new THREE.PerspectiveCamera(44, 1280 / 900, 0.1, 2000);
-let orbit = 0.95;
-const orbitR = 19, orbitY = 10;
-let lookY = 7.0;
-cam.position.set(cx + Math.cos(orbit) * orbitR, orbitY, cz + Math.sin(orbit) * orbitR);
-cam.lookAt(cx, lookY, cz);
-
-// 夜间补光：冷调月光 + 弱环境，让玻璃塔身与龙鳞仍可辨，但氛围压暗以突出窗光
-const moon = new THREE.DirectionalLight(0xbcd2ff, 1.1);
-moon.position.set(cx + 30, 70, cz + 25);
-scene.add(moon);
-const nightAmb = new THREE.AmbientLight(0x4a5a78, 0.5);
-scene.add(nightAmb);
-const nightHemi = new THREE.HemisphereLight(0x223047, 0x10160f, 0.5);
-scene.add(nightHemi);
-const rim = new THREE.DirectionalLight(0xffe6c2, 1.2);
-rim.position.set(cx - 20, 25, cz - 28);
-scene.add(rim);
-
-// 白天补光：强太阳 + 天空环境光（紫峰幕墙是银灰反光玻璃，日光下应读作「浅银绿」而非黑）
-const sun = new THREE.DirectionalLight(0xfff2e0, 2.0);
-sun.position.set(cx + 55, 90, cz + 30);
-sun.visible = false;
-scene.add(sun);
-const dayAmb = new THREE.AmbientLight(0xcfe0ee, 1.1);
-dayAmb.visible = false;
-scene.add(dayAmb);
-const dayHemi = new THREE.HemisphereLight(0xbfd8ee, 0x6a7264, 1.1);
-dayHemi.visible = false;
-scene.add(dayHemi);
-
-const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
-renderer.setSize(1280, 900);
-renderer.setPixelRatio(1.25);
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.0;
-document.body.appendChild(renderer.domElement);
-
-// 环境反射：紫峰幕墙的银亮感全靠 env 反射（metalness 0.6 没有 env 就是一片黑）。
-// 主 app 走 js/environment.js 的 PMREM；预览这里自建一个「天-地」双色球环境，8 行搞定。
-{
-  const pmrem = new THREE.PMREMGenerator(renderer);
-  const envScene = new THREE.Scene();
-  const skyGeo = new THREE.SphereGeometry(200, 16, 12);
-  const pos = skyGeo.attributes.position;
-  const colors = new Float32Array(pos.count * 3);
-  const cSky = new THREE.Color('#bcd3e6'), cGround = new THREE.Color('#6a7264'), cTmp = new THREE.Color();
-  for (let i = 0; i < pos.count; i++) {
-    const t = Math.max(0, Math.min(1, pos.getY(i) / 200 * 0.5 + 0.5));
-    cTmp.lerpColors(cGround, cSky, Math.pow(t, 0.7));
-    colors[i * 3] = cTmp.r; colors[i * 3 + 1] = cTmp.g; colors[i * 3 + 2] = cTmp.b;
+// A soft sky plus large reflected light sources makes the glass legible from
+// every angle. Separate environments retain cool, subdued night reflections.
+const pmrem = new THREE.PMREMGenerator(renderer);
+function makeEnvironment(night) {
+  const environment = new THREE.Scene();
+  const skyGeometry = new THREE.SphereGeometry(100, 32, 20);
+  const position = skyGeometry.attributes.position;
+  const colors = new Float32Array(position.count * 3);
+  const sky = new THREE.Color(night ? '#364f70' : '#d8e9f5');
+  const horizon = new THREE.Color(night ? '#162437' : '#aebabe');
+  const color = new THREE.Color();
+  for (let i = 0; i < position.count; i++) {
+    const amount = THREE.MathUtils.clamp(position.getY(i) / 100 * 0.5 + 0.5, 0, 1);
+    color.lerpColors(horizon, sky, Math.pow(amount, 0.65));
+    color.toArray(colors, i * 3);
   }
-  skyGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  envScene.add(new THREE.Mesh(skyGeo, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide })));
-  // 太阳亮斑：幕墙「银亮」的关键 —— 真实玻璃的反光是天空中的太阳点，
-  // 均匀环境球没有亮点，金属立面就只有漫反射灰。
-  const sunDir = new THREE.Vector3(55, 90, 30).normalize();
-  const sunBlob = new THREE.Mesh(
-    new THREE.SphereGeometry(28, 12, 10),
-    new THREE.MeshBasicMaterial({ color: new THREE.Color(6, 5.4, 4.2) }),   // HDR 亮斑（>1）
-  );
-  sunBlob.position.copy(sunDir).multiplyScalar(180);
-  envScene.add(sunBlob);
-  scene.environment = pmrem.fromScene(envScene, 0.04).texture;
-  pmrem.dispose();
+  skyGeometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  environment.add(new THREE.Mesh(skyGeometry, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide })));
+  for (const [x, y, z, brightness] of [[-50, 30, -45, 2.8], [40, 55, 45, 4.0]]) {
+    const light = new THREE.Mesh(
+      new THREE.PlaneGeometry(30, 65),
+      new THREE.MeshBasicMaterial({ color: new THREE.Color().setScalar(night ? brightness * 0.14 : brightness), side: THREE.DoubleSide }),
+    );
+    light.position.set(x, y, z);
+    light.lookAt(0, 0, 0);
+    environment.add(light);
+  }
+  const result = pmrem.fromScene(environment, 0.03);
+  environment.traverse((object) => {
+    object.geometry?.dispose();
+    object.material?.dispose();
+  });
+  return result;
+}
+const dayEnvironment = makeEnvironment(false);
+const nightEnvironment = makeEnvironment(true);
+pmrem.dispose();
+
+const query = new URLSearchParams(location.search);
+function queryNumber(name, fallback) {
+  const raw = query.get(name);
+  const value = raw === null || raw.trim() === '' ? NaN : Number(raw);
+  return Number.isFinite(value) ? value : fallback;
+}
+const initialAngle = queryNumber('angle', 2.35);
+let night = query.get('mode') === 'night';
+let automaticFraming = true;
+
+function updateDirectionButtons(angle = null) {
+  document.querySelectorAll('[data-angle]').forEach((button) => {
+    button.setAttribute('aria-pressed', String(angle !== null && Math.abs(Number(button.dataset.angle) - angle) < 0.001));
+  });
+}
+function setRotation(enabled) {
+  controls.autoRotate = enabled;
+  document.getElementById('rotate').setAttribute('aria-pressed', String(enabled));
+  if (enabled) updateDirectionButtons();
+}
+function applyLighting() {
+  const background = night ? '#101c2d' : '#e4ebef';
+  scene.background = new THREE.Color(background);
+  scene.fog = new THREE.Fog(background, 40, 115);
+  scene.environment = (night ? nightEnvironment : dayEnvironment).texture;
+  ground.material.color.set(night ? '#162335' : '#d5dde0');
+  ambient.color.set(night ? '#6e8ba9' : '#ddeaf4');
+  ambient.intensity = night ? 0.3 : 0.35;
+  hemi.color.set(night ? '#637fa6' : '#e0efff');
+  hemi.groundColor.set(night ? '#141e2d' : '#9fa9ad');
+  hemi.intensity = night ? 0.7 : 0.9;
+  key.color.set(night ? '#a6c7ef' : '#fff4e6');
+  key.intensity = night ? 0.8 : 2.3;
+  fill.intensity = night ? 0.45 : 0.8;
+  renderer.toneMappingExposure = night ? 1.05 : 1.08;
+  building.userData.setNight?.(night ? 1 : 0);
+  document.body.classList.toggle('night', night);
+  document.querySelectorAll('[data-mode]').forEach((button) => {
+    button.setAttribute('aria-pressed', String((button.dataset.mode === 'night') === night));
+  });
 }
 
-// 夜景：窗光拉亮、冠缘发光（?mode=day 可切白天，便于核对比例）
-let night = true;
-let orbitFrozen = false;
-let orbitR2 = orbitR;
-try {
-  const q = new URLSearchParams(location.search);
-  if (q.get('mode') === 'day') night = false;
-  if (q.get('angle') !== null) { orbit = parseFloat(q.get('angle')) || 0; orbitFrozen = true; }  // 固定视角截图用
-  if (q.get('r') !== null) orbitR2 = parseFloat(q.get('r')) || orbitR;                            // 固定距离
-  if (q.get('ly') !== null) lookY = parseFloat(q.get('ly')) || lookY;                             // 注视高度
-} catch (e) {}
-const applyNight = () => {
-  if (g.userData.setNight) g.userData.setNight(night ? 1 : 0);
-  scene.background.set(night ? '#0a0e1a' : '#cfe0ea');
-  moon.visible = night; nightAmb.visible = night; nightHemi.visible = night; rim.visible = night;
-  sun.visible = !night; dayAmb.visible = !night; dayHemi.visible = !night;
-  ground.material.color.set(night ? '#2a3326' : '#5d6a5a');
-};
-applyNight();
-window.addEventListener('keydown', (e) => { if (e.key === 'n' || e.key === 'N') { night = !night; applyNight(); } });
-window.addEventListener('wheel', (e) => { orbitR2 = Math.min(40, Math.max(8, orbitR2 + Math.sign(e.deltaY) * 1.5)); });
+function fitDistance() {
+  const verticalFov = THREE.MathUtils.degToRad(camera.fov);
+  const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * camera.aspect);
+  // Reserve space for the controls on short/mobile screens. Bounding the
+  // horizontal diagonal also keeps the podium visible at every azimuth.
+  const horizontalExtent = Math.hypot(size.x, size.z);
+  const verticalFit = size.y / (2 * Math.tan(verticalFov / 2));
+  const horizontalFit = horizontalExtent / (2 * Math.tan(horizontalFov / 2));
+  return Math.max(verticalFit, horizontalFit) * (window.innerWidth < 650 ? 1.48 : 1.30) + horizontalExtent * 0.3;
+}
+function frameBuilding(angle = initialAngle, respectQuery = false) {
+  controls.target.copy(center);
+  if (respectQuery) controls.target.y = queryNumber('ly', center.y);
+  const distance = respectQuery ? THREE.MathUtils.clamp(queryNumber('r', fitDistance()), 2, 100) : fitDistance();
+  camera.position.set(
+    center.x + Math.cos(angle) * distance,
+    controls.target.y + distance * 0.12,
+    center.z + Math.sin(angle) * distance,
+  );
+  camera.lookAt(controls.target);
+  controls.update();
+}
+function resize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  if (automaticFraming) {
+    const angle = Math.atan2(camera.position.z - controls.target.z, camera.position.x - controls.target.x);
+    frameBuilding(angle);
+  }
+}
+// Set size before fitting, so both portrait and landscape start with the full
+// spire and podium in view. Explicit query parameters remain useful for review.
+camera.aspect = window.innerWidth / window.innerHeight;
+camera.updateProjectionMatrix();
+renderer.setSize(window.innerWidth, window.innerHeight);
+frameBuilding(initialAngle, true);
+automaticFraming = !query.has('r') && !query.has('ly');
+applyLighting();
 
+for (const button of document.querySelectorAll('[data-mode]')) {
+  button.addEventListener('click', () => { night = button.dataset.mode === 'night'; applyLighting(); });
+}
+for (const button of document.querySelectorAll('[data-angle]')) {
+  button.addEventListener('click', () => {
+    const angle = Number(button.dataset.angle);
+    setRotation(false);
+    frameBuilding(angle);
+    automaticFraming = true;
+    updateDirectionButtons(angle);
+  });
+}
+document.getElementById('rotate').addEventListener('click', () => setRotation(!controls.autoRotate));
+document.getElementById('facade-detail').addEventListener('click', () => {
+  setRotation(false);
+  automaticFraming = false;
+  updateDirectionButtons();
+  // Match the review camera: angle=2.35&r=8&ly=8 (240 m at 30 m/unit).
+  const angle = 2.35, distance = 8;
+  controls.target.copy(center).setY(8);
+  camera.position.set(
+    center.x + Math.cos(angle) * distance,
+    controls.target.y + distance * 0.12,
+    center.z + Math.sin(angle) * distance,
+  );
+  camera.lookAt(controls.target);
+  controls.update();
+});
+document.getElementById('fit').addEventListener('click', () => {
+  setRotation(false);
+  frameBuilding();
+  automaticFraming = true;
+  updateDirectionButtons();
+});
+controls.addEventListener('start', () => {
+  automaticFraming = false;
+  setRotation(false);
+  updateDirectionButtons();
+});
+window.addEventListener('resize', resize);
+window.addEventListener('keydown', (event) => {
+  if (event.key.toLowerCase() === 'n') { night = !night; applyLighting(); }
+});
 const clock = new THREE.Clock();
 function loop() {
-  const t = clock.elapsedTime;
-  if (!orbitFrozen) orbit += 0.0035;
-  cam.position.x = cx + Math.cos(orbit) * orbitR2;
-  cam.position.z = cz + Math.sin(orbit) * orbitR2;
-  cam.position.y = orbitFrozen ? 9.0 : orbitY + Math.sin(orbit * 0.7) * 1.2;   // 固定视角时保持水平平视，便于对比轮廓
-  cam.lookAt(cx, lookY, cz);
-  if (g.userData.tick) g.userData.tick(t);          // 航空障碍灯闪烁
-  renderer.render(scene, cam);
+  const delta = clock.getDelta();
+  controls.update(delta);
+  building.userData.tick?.(clock.elapsedTime);
+  renderer.render(scene, camera);
   requestAnimationFrame(loop);
 }
 loop();

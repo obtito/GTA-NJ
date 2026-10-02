@@ -1,14 +1,74 @@
 <!DOCTYPE html>
-<html lang="zh">
+<html lang="zh-CN">
 <head>
 <meta charset="utf-8" />
-<title>紫峰大厦 预览</title>
-<style>html,body{margin:0;height:100%;background:#cfe0ea;overflow:hidden}canvas{display:block}</style>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="theme-color" content="#e4ebef" />
+<title>紫峰大厦 · 建筑单体预览</title>
+<style>
+  :root { color-scheme: light; font-family: "Microsoft YaHei", "PingFang SC", sans-serif; color: #263943; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #e4ebef; }
+  canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+  .caption { position: fixed; left: 30px; top: 27px; z-index: 1; pointer-events: none; }
+  .eyebrow { margin: 0 0 10px; font-size: 11px; font-weight: 700; letter-spacing: .2em; opacity: .52; }
+  h1 { margin: 0; font-size: 28px; font-weight: 600; letter-spacing: .08em; }
+  .height { display: inline-block; margin: 12px 0; font-size: 15px; font-weight: 600; letter-spacing: .04em; }
+  .height span { margin-left: 8px; font-size: 11px; font-weight: 400; opacity: .6; }
+  .note { margin: 0; font-size: 12px; line-height: 1.8; opacity: .68; }
+  .toolbar { position: fixed; z-index: 2; left: 50%; bottom: 28px; transform: translateX(-50%); display: flex; flex-wrap: wrap; justify-content: center; gap: 7px; width: max-content; max-width: calc(100% - 28px); padding: 10px; border: 1px solid #ffffffa0; border-radius: 16px; background: #f7fafbe3; box-shadow: 0 8px 28px #24405012; backdrop-filter: blur(14px); }
+  .group { display: flex; flex-wrap: wrap; justify-content: center; max-width: 100%; gap: 4px; }
+  .group + .group { padding-left: 8px; border-left: 1px solid #c4d0d8; }
+  button { appearance: none; border: 0; border-radius: 8px; padding: 9px 13px; background: transparent; color: inherit; font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap; transition: background .15s, color .15s; }
+  button:hover { background: #dce7ec; }
+  button[aria-pressed="true"] { color: #fff; background: #344e5d; }
+  button:focus-visible { outline: 2px solid #338bad; outline-offset: 2px; }
+  .hint { position: fixed; right: 27px; top: 29px; margin: 0; font-size: 11px; opacity: .55; pointer-events: none; }
+  body.night { color: #dce8f1; }
+  body.night .toolbar { background: #14263ce8; border-color: #c8e5ff25; box-shadow: 0 8px 28px #0003; }
+  body.night .group + .group { border-color: #ffffff25; }
+  body.night button:hover { background: #2e465c; }
+  body.night button[aria-pressed="true"] { background: #b6d2e1; color: #142738; }
+  @media (max-width: 650px) {
+    .caption { left: 20px; top: 19px; }
+    .eyebrow { margin-bottom: 6px; font-size: 9px; }
+    h1 { font-size: 22px; }
+    .height { margin: 8px 0; }
+    .note { font-size: 10px; }
+    .hint { right: 20px; top: auto; bottom: 113px; font-size: 10px; }
+    .toolbar { bottom: 18px; padding: 8px; gap: 5px; border-radius: 13px; }
+    button { padding: 8px 10px; font-size: 11px; }
+  }
+</style>
 <script type="importmap">
-{ "imports": { "three": "./vendor/three.module.js" } }
+{ "imports": { "three": "./vendor/three.module.js", "three/addons/controls/OrbitControls.js": "./vendor/OrbitControls.js" } }
 </script>
 </head>
 <body>
+<header class="caption">
+  <p class="eyebrow">NANJING · ZIFENG TOWER</p>
+  <h1>紫峰大厦</h1>
+  <p class="height">450 m <span>建筑总高</span></p>
+  <p class="note">建筑单体等比 · 细部参考照片重建</p>
+</header>
+<p class="hint">拖动旋转 · 滚轮缩放 · 右键平移</p>
+<nav class="toolbar" aria-label="建筑预览控制">
+  <div class="group" aria-label="光照">
+    <button type="button" data-mode="day" aria-pressed="true">白天</button>
+    <button type="button" data-mode="night" aria-pressed="false">夜景</button>
+  </div>
+  <div class="group" aria-label="观察方向">
+    <button type="button" data-angle="-1.5707963267948966" aria-pressed="false">北面</button>
+    <button type="button" data-angle="0" aria-pressed="false">东面</button>
+    <button type="button" data-angle="1.5707963267948966" aria-pressed="false">南面</button>
+    <button type="button" data-angle="3.141592653589793" aria-pressed="false">西面</button>
+  </div>
+  <div class="group" aria-label="镜头">
+    <button type="button" id="rotate" aria-pressed="false">自动旋转</button>
+    <button type="button" id="facade-detail">幕墙特写</button>
+    <button type="button" id="fit">整栋复位</button>
+  </div>
+</nav>
 <script type="module" src="./preview-zifeng.mjs"></script>
 </body>
 </html>

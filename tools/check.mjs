@@ -12,6 +12,7 @@ import vm from 'node:vm';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const rel = (p) => p.replace(root + '\\', '').replace(/\//g, '/');
 const files = [
+  ...readdirSync(root).filter((f) => f.endsWith('.mjs')).map((f) => join(root, f)),
   ...readdirSync(join(root, 'js')).filter((f) => f.endsWith('.js')).map((f) => join(root, 'js', f)),
   ...readdirSync(join(root, 'tools')).filter((f) => f.endsWith('.mjs')).map((f) => join(root, 'tools', f)),
 ];
