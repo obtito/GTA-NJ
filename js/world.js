@@ -318,6 +318,31 @@ export function buildRoads(extraLines = []) {
 
 /* ==================== 明城墙 ==================== */
 
+/**
+ * 墙体洗墙灯带：沿每段墙的某一面，从 y0 到 y1 拉一条竖直窄带。
+ * 段数与墙段一致（同一批 segs，城门处自然断开），一个 BufferGeometry 出全部灯带，
+ * 不额外增加 draw call。
+ */
+function washStrip(segs, off, y0, y1) {
+  const n = segs.length;
+  const pos = new Float32Array(n * 12);
+  const uv = new Float32Array(n * 8);
+  const idx = new Uint32Array(n * 6);
+  segs.forEach((s, i) => {
+    const nx = -Math.cos(s.ang) * off, nz = Math.sin(s.ang) * off;
+    const ax = s.x0 + nx, az = s.z0 + nz, bx = s.x1 + nx, bz = s.z1 + nz;
+    pos.set([ax, y0, az, bx, y0, bz, bx, y1, bz, ax, y1, az], i * 12);
+    uv.set([0, 0, 1, 0, 1, 1, 0, 1], i * 8);
+    const o = i * 4;
+    idx.set([o, o + 1, o + 2, o, o + 2, o + 3], i * 6);
+  });
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  g.setIndex(new THREE.BufferAttribute(idx, 1));
+  return g;
+}
+
 export function buildWall() {
   const group = new THREE.Group();
   group.name = 'citywall';
@@ -368,6 +393,33 @@ export function buildWall() {
       merlons.setMatrixAt(mi++, dummy.matrix);
     }
   });
+  // 夜间亮化：墙身两面连续洗墙灯带 + 墙体泛光。
+  // 灯带做在墙面上而非墙顶：从街上看是一道贴着墙走的暖光，从空中看是墙线亮边；
+  // 泛光用材质 emissive（不参与光照计算，仅随 night 因子起落），
+  // 让整段墙在夜里是"被照亮的石头"而不是一条黑剪影——参考南京城墙现有夜景。
+  const lightMat = new THREE.MeshBasicMaterial({
+    color: 0xffbe70, transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide,
+  });
+  const y0 = wallH - vU(3.4), y1 = wallH - vU(0.5);
+  const lights = new THREE.Group();
+  lights.name = 'wallLights';
+  for (const dir of [1, -1]) {
+    const mesh = new THREE.Mesh(washStrip(segs, (dir * wallW) / 2 + dir * 0.05, y0, y1), lightMat);
+    mesh.frustumCulled = false;
+    lights.add(mesh);
+  }
+  group.add(lights);
+  const floodMats = [wallMat, merlonMat];
+  const FLOOD = new THREE.Color('#6b5a3c');
+  function setNight(k) {
+    const n = clamp(k, 0, 1);
+    lightMat.opacity = n * 0.8;
+    for (const m of floodMats) {
+      m.emissive.copy(FLOOD);
+      m.emissiveIntensity = n * 0.62;
+    }
+  }
+
   body.count = segs.length;
   merlons.count = mi;
   body.instanceMatrix.needsUpdate = true;
@@ -375,5 +427,5 @@ export function buildWall() {
   body.castShadow = merlons.castShadow = true;
   body.receiveShadow = merlons.receiveShadow = true;
   group.add(body, merlons);
-  return { group, polygon: closed, mats: [wallMat, merlonMat] };
+  return { group, polygon: closed, mats: [wallMat, merlonMat], glow: lights, glowMat: lightMat, setNight };
 }

@@ -98,12 +98,21 @@ console.log(warn ? '!! 共 ' + warn + ' 项超出 8% 容差' : '全部地标均�
 console.log('');
 const grid = c.districtGridLines();
 console.log('片区路网线段=' + grid.length);
-const roads = w.buildRoads(grid);
-report('道路', roads.mesh);
 
-// 城墙：曾因未被 smoke 覆盖，运行时的 ReferenceError(hU 未导入) 只在浏览器里爆发
+// 城墙与城门：曾因未被 smoke 覆盖，运行时的 ReferenceError(hU 未导入) 只在浏览器里爆发
 const wall = w.buildWall();
 report('城墙', wall.group);
+
+// 城门：现存/复建出券门+城台，遗址门只留豁口与文保台基
+const gm = await import('../js/gates.js');
+const gates = gm.buildGates();
+gates.setNight(1);          // 夜间亮化分支也要跑一遍（灯带 opacity / 窗光 emissive）
+report('城门', gates.group);
+const gateRoads = gm.gateRoadLines();
+console.log('穿门道路=' + gateRoads.length + ' 条（通行门沿墙线法向铺路）');
+
+const roads = w.buildRoads([...grid, ...gateRoads]);
+report('道路', roads.mesh);
 
 const city = c.buildCity({ exclusions: lm.exclusions });
 report('楼群', city.group);

@@ -8,11 +8,12 @@ import {
 } from './world.js';
 import { buildCity, buildTrees, buildCars, districtGridLines } from './city.js';
 import { buildLandmarks } from './landmarks.js';
+import { buildGates, gateRoadLines } from './gates.js';
 import { createEnvironment } from './environment.js';
 import { collectOccluders, bakeCityAmbient, applyCityAmbient, setCityAmbientDirect } from './ambient.js';
 import { setEnvIntensity } from './lib.js';
-import { CATEGORIES, DISTRICTS, RIVER, CITY_WALL } from './data.js';
-import { toV2, toV2List, clamp, lerp, sunState, easeInOutCubic } from './geo.js';
+import { CATEGORIES, DISTRICTS, RIVER, CITY_WALL, CITY_GATES } from './data.js';
+import { toV2, toV2List, clamp, lerp, sunState, easeInOutCubic, vU } from './geo.js';
 
 /* ==================== DOM ==================== */
 const $ = (s) => document.querySelector(s);
@@ -30,7 +31,7 @@ const elTimeSlider = $('#timeSlider');
 /* ==================== 渲染器 / 场景 ==================== */
 let renderer, scene, camera, controls, sky, sunLight, hemi, ambient, waterMat;
 let moonLight, stars;
-let city, trees, cars, roads, waterGroup;
+let city, trees, cars, roads, waterGroup, gates, walls;
 let env = null;                       // 共享 HDR 环境（PMREM）
 let landmarkItems = [];
 let labelEls = [];
@@ -216,6 +217,9 @@ function applyTime(hours) {
   if (city) city.setNight(night);
   if (cars) cars.setNight(Math.max(night, dusk * 0.4));
   if (roads) roads.glow.material.opacity = clamp(night * 0.55 + dusk * 0.18, 0, 0.7);
+  // 城墙亮化：墙身两面连续洗墙灯带 + 墙体泛光，黄昏先起、入夜全亮（参考南京城墙现有夜景）
+  if (walls && walls.setNight) walls.setNight(Math.max(night, dusk * 0.5));
+  if (gates) gates.setNight(Math.max(night, dusk * 0.5));   // 城台压顶灯带 + 城楼窗光
   if (landmarkItems) for (const it of landmarkItems) it.setNight && it.setNight(night);   // 地标夜景（窗光/冠缘发光）
 
   // 城市 AO 施加到直射光的份额：白天 0.30 / 黄昏 0.24 / 夜间 0（夜间只剩灯光，别再压暗）
@@ -282,6 +286,7 @@ async function build() {
     const w = buildWall();
     scene.add(w.group);
     aoTargets.wall.push(...w.mats);
+    walls = w;
   }, 46);
   const lm = await step('复刻精细地标', () => {
     const r = buildLandmarks();
@@ -299,9 +304,16 @@ async function build() {
     }
   }
 
+  await step('复刻十五座城门', () => {
+    const g = buildGates({ exclusions: lm.exclusions });
+    scene.add(g.group);
+    gates = g;   // 材质在 AO 烘焙阶段统一登记（见「烘焙城市环境光遮蔽」）
+  }, 68);
+
   await step('生成城市街区路网', () => {
     const grid = districtGridLines();
-    roads = buildRoads(grid);
+    // 穿门道路：通行门沿墙线法向铺路，从门洞与豁口穿过（遗址门为较窄的园区路）
+    roads = buildRoads([...grid, ...gateRoadLines()]);
     scene.add(roads.mesh);
     scene.add(roads.glow);
     aoTargets.ground.push(...roads.mats);
@@ -328,12 +340,14 @@ async function build() {
   await step('烘焙城市环境光遮蔽', () => {
     // 地标也参与遮挡：塔楼脚下、城门洞、巷子里的明暗差靠这张场
     const seen = new Set();
-    lm.group.traverse((o) => {
+    const collectMats = (root) => root.traverse((o) => {
       if (!o.isMesh || !o.material) return;
       for (const m of Array.isArray(o.material) ? o.material : [o.material]) {
         if (m && m.isMeshStandardMaterial && !seen.has(m)) { seen.add(m); aoTargets.wall.push(m); }
       }
     });
+    collectMats(lm.group);
+    if (gates) collectMats(gates.group);   // 城台/城楼/遗址台基同样吃街谷遮蔽
 
     const occ = collectOccluders(city, landmarkItems);
     // 先注入（登记材质），再烘焙 —— 烘焙结束会统一置 needsUpdate 触发重编译
@@ -508,6 +522,17 @@ function flyTo(targetPos, dist, polarDeg, azimuthRad, dur = 1500) {
   };
   controls.autoRotate = false;
   $('#tgSpin').classList.remove('active');
+}
+
+/** 直接落位（不播动画）：与 flyTo 同一套球坐标约定，供 ?gate= 这类链接打开即所见 */
+function placeCamera(targetPos, dist, polarDeg, azimuthRad) {
+  anim = null;
+  _sph.set(dist, THREE.MathUtils.degToRad(clamp(polarDeg, 5, 88)), azimuthRad);
+  _off.setFromSpherical(_sph);
+  controls.target.copy(targetPos);
+  camera.position.copy(targetPos).add(_off);
+  camera.lookAt(targetPos);
+  controls.update();
 }
 
 function updateAnim() {
@@ -925,10 +950,11 @@ function loop() {
   renderer.setAnimationLoop(loop);
   // 开场：城市由地平线生长
   grow = 0;
-  flyTo(new THREE.Vector3(0, 4, 0), 420, 46, Math.PI * 0.28, 2600);
-  // URL 参数：?t=22.5 指定时刻；?lm=nanjingeye 开场飞到指定地标（?lm=none 保持全景）
-  // 二者组合即可分享"某时刻 + 某地标"的链接，也便于无交互地截图自检
+  // URL 参数：?t=22.5 指定时刻；?lm=nanjingeye 指定地标；?gate=神策门 指定城门视角
+  // （二者可组合，便于分享"某时刻 + 某处"的链接，也便于无交互地截图自检）
   let lmParam = 'zifeng';
+  let gateParam = '';
+  let openFlight = true;
   try {
     const q = new URLSearchParams(location.search);
     const tParam = parseFloat(q.get('t'));
@@ -938,11 +964,30 @@ function loop() {
       elTimeSlider.value = timeHours;
     }
     if (q.get('lm') !== null) lmParam = q.get('lm');
+    // ?gate=神策门 —— 城门视角（现/复建门看见城台券门，遗址门看见豁口与文保台基）
+    if (q.get('gate')) gateParam = q.get('gate');
   } catch (e) {}
-  setTimeout(() => {
-    $('#loading').classList.add('done');
-    if (lmParam !== 'none') selectById(lmParam, true);
-  }, 700);
+
+  // 城门视角：站在城内一侧（城心→门位的反向），视线压住券门，
+  // 距离 300m、俯角 38°——券门、城台压顶、雉堞、穿门道路（有瓮城的含错位折行）
+  // 与豁口同框；遗址门则看到分开两侧的台基、残垣与文保碑。
+  const gateSel = CITY_GATES.find((g2) => g2.name === gateParam);
+  if (gateSel) {
+    const [gx, gz] = toV2(gateSel.lon, gateSel.lat);
+    const L = Math.hypot(gx, gz) || 1;
+    // 指定了城门就直接落位（不放开场动画），保证链接打开即所见
+    placeCamera(new THREE.Vector3(gx, Math.max(0, terrainHeight(gx, gz) + vU(12)), gz),
+      gateSel.urn ? 4.2 : 3, 38, Math.atan2(-gx / L, -gz / L));
+    openFlight = false;
+  }
+  if (openFlight) flyTo(new THREE.Vector3(0, 4, 0), 420, 46, Math.PI * 0.28, 2600);
+  if (lmParam !== 'none' && !gateSel) setTimeout(() => selectById(lmParam, true), 700);
+  // 带参数打开的是"某时刻 + 某处"的直达链接：开场遮罩直接撤掉，不做淡出，
+  // 打开即所见（也让无交互截图自检拿到的就是最终画面）
+  const direct = !!gateSel || lmParam !== 'zifeng' || location.search.length > 1;
+  const elLoad = $('#loading');
+  if (direct) elLoad.style.transition = 'none';
+  setTimeout(() => elLoad.classList.add('done'), direct ? 0 : 700);
   // 操作提示只在刚进入时有引导价值，读完即淡出，不长期占用底部视线
   setTimeout(() => $('#hint').classList.add('fade'), 9000);
 })();

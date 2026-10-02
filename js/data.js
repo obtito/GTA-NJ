@@ -526,21 +526,41 @@ export const CITY_WALL = [
  * 龙蟠路→太平门、中央路→神策门、中山北路→挹江门……）。
  * 解放门、玄武门为后开的门，同样在墙上留口。 */
 export const CITY_GATES = [
-  { name: '中华门', lon: 118.776442, lat: 32.014164 },
-  { name: '通济门', lon: 118.799325, lat: 32.027730 },
-  { name: '光华门', lon: 118.810564, lat: 32.025533 },
-  { name: '中山门', lon: 118.822114, lat: 32.040843 },
-  { name: '太平门', lon: 118.807875, lat: 32.060026 },
-  { name: '解放门', lon: 118.791438, lat: 32.064118 },
-  { name: '玄武门', lon: 118.782395, lat: 32.072573 },
-  { name: '神策门', lon: 118.781887, lat: 32.091719 },
-  { name: '金川门', lon: 118.752337, lat: 32.100307 },
-  { name: '仪凤门', lon: 118.742375, lat: 32.093678 },
-  { name: '挹江门', lon: 118.741646, lat: 32.088658 },
-  { name: '钟阜门', lon: 118.752033, lat: 32.079675 },
-  { name: '清凉门', lon: 118.745743, lat: 32.049223 },
-  { name: '汉中门', lon: 118.761804, lat: 32.044781 },
-  { name: '水西门', lon: 118.764123, lat: 32.034855 },
+  // kind: existing 现存 / rebuilt 复建 / ruin 仅存遗址（今为遗址广场或遗址公园）
+  // bays: 券门孔数 · span: 单孔净宽(m) · road: 是否通车 · tower: 是否有城楼
+  // wallH: 该门城台残高(m，实测 14–26m) · name按现存门额 / old 为该门旧称
+  // urn: 瓮城形制 outer 外瓮城 / inner 内瓮城 / ruin 瓮城残垣 / null 无
+  // urnOff: 瓮城门与主门洞的错位(m，真实瓮城两门错开，不能直穿) · urnDep: 瓮城进深(m)
+  { name: '中华门', lon: 118.776442, lat: 32.014164, kind: 'existing', bays: 4, span: 8, tower: false, road: false, wallH: 26,
+    old: '聚宝门', note: '全国重点文保·景区，门洞步行不通车；三道内瓮城 27 藏兵洞由地标单独精建模，此处不重复' },
+  { name: '通济门', lon: 118.799325, lat: 32.027730, kind: 'ruin', bays: 3, span: 8, tower: false, road: true, wallH: 20,
+    old: '九龙桥门', urn: 'ruin', urnDep: 34, note: '明京城最大瓮城（内瓮城三重），1950 年代拆除，今为遗址广场' },
+  { name: '光华门', lon: 118.810564, lat: 32.025533, kind: 'ruin', bays: 1, span: 7, tower: false, road: true, wallH: 20,
+    old: '正阳门', urn: 'ruin', urnDep: 30, note: '1937 年南京保卫战毁于战火，仅存遗址与残垣' },
+  { name: '中山门', lon: 118.822114, lat: 32.040843, kind: 'existing', bays: 3, span: 7, tower: false, road: true, wallH: 21,
+    old: '朝阳门', note: '1928 年迎奉孙中山灵柩改建为三孔券门，今通车' },
+  { name: '太平门', lon: 118.807875, lat: 32.060026, kind: 'rebuilt', bays: 1, span: 7, tower: true, road: true, wallH: 20,
+    note: '1955 年拆除，2014 年按明代形制复建城门及城楼' },
+  { name: '解放门', lon: 118.791438, lat: 32.064118, kind: 'existing', bays: 3, span: 6, tower: false, road: true, wallH: 19,
+    note: '1954 年新开，台城段登城口，三孔门洞供行人车辆通行' },
+  { name: '玄武门', lon: 118.782395, lat: 32.072573, kind: 'existing', bays: 1, span: 6, tower: false, road: true, wallH: 18,
+    note: '1908 年开辟，初名丰润门，通玄武湖（今为景区南门）' },
+  { name: '神策门', lon: 118.781887, lat: 32.091719, kind: 'existing', bays: 1, span: 7, tower: true, road: true, wallH: 22,
+    old: '和平门', urn: 'outer', urnOff: 13, urnDep: 45, note: '现存唯一保留清代外瓮城与歇山式城楼者，瓮城门偏东错开' },
+  { name: '金川门', lon: 118.752337, lat: 32.100307, kind: 'ruin', bays: 1, span: 7, tower: false, road: true, wallH: 18,
+    urn: 'ruin', urnDep: 28, note: '清末废弃，仅存地名与遗址' },
+  { name: '仪凤门', lon: 118.742375, lat: 32.093678, kind: 'rebuilt', bays: 1, span: 7, tower: true, road: true, wallH: 21,
+    old: '兴中门', note: '狮子山东麓，2006 年依明代形制复建城楼' },
+  { name: '挹江门', lon: 118.741646, lat: 32.088658, kind: 'existing', bays: 3, span: 7, tower: true, road: true, wallH: 21,
+    old: '海陵门', note: '1912 年开辟，1946 年建城楼（今渡江胜利纪念馆一侧）' },
+  { name: '钟阜门', lon: 118.752033, lat: 32.079675, kind: 'ruin', bays: 1, span: 7, tower: false, road: true, wallH: 18,
+    note: '与仪凤门对称，仅存遗址' },
+  { name: '清凉门', lon: 118.745743, lat: 32.049223, kind: 'existing', bays: 1, span: 6, tower: false, road: true, wallH: 20,
+    old: '清江门', urn: 'inner', urnOff: 11, urnDep: 38, note: '现存券门与内瓮城，瓮城为明初形制孤例' },
+  { name: '汉中门', lon: 118.761804, lat: 32.044781, kind: 'ruin', bays: 1, span: 6, tower: false, road: true, wallH: 20,
+    old: '石城门', urn: 'ruin', urnDep: 30, note: '石城门门址已拆，今存瓮城遗址（汉中门广场）' },
+  { name: '水西门', lon: 118.764123, lat: 32.034855, kind: 'ruin', bays: 1, span: 7, tower: false, road: true, wallH: 19,
+    old: '三山门', urn: 'ruin', urnDep: 28, note: '三山门，1950 年代拆除，今为水西门遗址公园' },
 ];
 
 /* ============ 山体（半轴单位为 km；height 单位 m） ============ */
