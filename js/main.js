@@ -10,6 +10,8 @@ import { buildCity, buildTrees, buildCars, buildStreetLights, districtGridLines 
 import { buildLandmarks } from './landmarks.js';
 import { buildGates, gateRoadLines, gateFrame } from './gates.js';
 import { buildFerry } from './transit.js';
+import { buildStreetProps } from './props.js';
+import { buildMetro } from './metro.js';
 import { loadGLB } from './assets.js';
 import { createEnvironment } from './environment.js';
 import { createArchitecturalLightPool } from './architectural-lighting.js';
@@ -37,6 +39,7 @@ let moonLight, stars;
 let architecturalLights;
 let city, trees, cars, roads, waterGroup, gates, walls;
 let lights, ferry;
+let props, metro;
 let env = null;                       // 共享 HDR 环境（PMREM）
 let landmarkItems = [];
 let labelEls = [];
@@ -223,6 +226,7 @@ function applyTime(hours) {
   if (city) city.setNight(night);
   if (cars) cars.setNight(Math.max(night, dusk * 0.4));
   if (lights) lights.setNight(Math.max(night, dusk * 0.4));   // 路灯灯头，与车灯同口径黄昏先起
+  if (metro) metro.setNight(Math.max(night, dusk * 0.4));     // 地铁站点夜光
   if (roads) roads.glow.material.opacity = clamp(night * 0.55 + dusk * 0.18, 0, 0.7);
   // 城墙亮化：墙身两面连续洗墙灯带 + 墙体泛光，黄昏先起、入夜全亮（参考南京城墙现有夜景）
   if (walls && walls.setNight) walls.setNight(Math.max(night, dusk * 0.5));
@@ -353,6 +357,11 @@ async function build() {
     // 中山码头—浦口 宁浦轮渡：江面往返班轮（独立于地标的观赏渔船）
     ferry = buildFerry();
     scene.add(ferry.group);
+
+    // KayKit 街景道具（CC0 单图集）：红绿灯落路口、小吃车/长椅/垃圾箱沿街+人流地标聚落
+    props = await buildStreetProps({ centerlines: roads.centerlines, exclusions: lm.exclusions });
+    scene.add(props.group);
+    console.log(`[GTA-NJ] 街景道具：${props.count} 件`);
   }, 88);
 
   await step('装载外部 GLB 资产', async () => {
@@ -365,8 +374,9 @@ async function build() {
 
     // 中山路静态停车：Kenney 车贴路缘排开（归一到车流视觉语言 0.23 单位车长，等比不压 Y）
     {
-      // 找主干道不能靠名字：中山路已并入「中山南路·中山北路」，按前缀取的同一条中心线
-      const zsl = ROADS.find((r) => r.name.startsWith('中山路'));
+      // 找主干道不能靠名字：中山路已并入「中山南路·中山北路」——注意 '中山南路' 并不以
+      // '中山路' 开头(第三字是'南'),startsWith 会静默失配,必须用包含匹配
+      const zsl = ROADS.find((r) => r.name.startsWith('中山南') || r.name.startsWith('中山路'));
       if (zsl) {
       const [ax0, az0] = toV2(zsl.pts[1][0], zsl.pts[1][1]);    // 新街口北侧
       const [ax1, az1] = toV2(zsl.pts[0][0], zsl.pts[0][1]);    // 向南排开
@@ -395,6 +405,16 @@ async function build() {
       if (parkedOk) console.log(`[GTA-NJ] 中山路路边停车：${parkedOk} 台 Kenney 车`);
       }
     }
+
+    // 南京地铁线网（AFAP/nanjing-metro 整理的 OSM 几何,ODbL）：高架实体走廊 + 地下半透明线
+    try {
+      const res = await fetch('./data/metro-3d.json');
+      if (res.ok) {
+        metro = buildMetro(await res.json());
+        scene.add(metro.group);
+        console.log(`[GTA-NJ] 地铁线网：${metro.lines} 条线 · ${metro.stations} 站`);
+      }
+    } catch (e) { console.warn('[GTA-NJ] 地铁数据不可用：', e.message); }
   }, 98);
 
   await step('烘焙城市环境光遮蔽', () => {
