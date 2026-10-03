@@ -8,12 +8,22 @@
 | # | 事项 | 依赖/触发条件 | 预估 |
 |---|---|---|---|
 | 1 | **行人 Phase 2**(recast-navigation-js):navmesh 避让/红绿灯停步/穿街过马路——Phase 1 轨道式(320 人)已于 2026-10-03 上线(e631b7a) | Phase 1 已交付 | 1-2 天 |
-| 2 | **轨道版车流智能**(不引库):车道内跟车减速 + 红绿灯停车点,消灭同车道穿插 | KayKit 红绿灯已入(本轮) | 半天 |
+| 2 | ~~轨道版车流智能~~ **已完成(2026-10-04)**:IDM-lite 跟车 + signals.js 相位真值红绿灯停车 + 灯珠变色,`npm run traffic:check` 验收 | — | — |
 | 3 | **Yuka 车流 AI**(MIT,three.js 维护者之作):NPC 车对玩家驾驶的反应 | GTA-WH 玩法期 | 1-2 天 |
 | 4 | **streets-gl 屋顶/退台算法移植**(MIT,24 个屋顶生成器):先花 10 分钟在 streets.gl 在线版查南京 OSM `roof:shape`/`building:levels` 覆盖率,标签富才值得移植 | 数据覆盖率验证 | 1-2 天(若验证通过) |
 | 5 | **Pyrosm/OSMnx 离线提取**(MIT,Python 3.11 就绪):整城真实楼高/断网批量拉 OSM;GeoFabrik 中国 PBF ~1GB | 出现批量数据需求时 | 按需 |
 | 6 | **OSM2World 真值对照**(MIT):跑一片新街口/鼓楼导出 OBJ,量程序化楼群体量偏差 | **需先装 JVM**(本机无 Java);只当尺子,产出不进场景 | 一次性 |
 | 7 | **3DTilesRendererJS**(NASA,Apache-2.0):接 Google 实景 3D Tiles 的未来路径;注意数据条款偏展示用途 | 实景需求出现 | 按需 |
+
+## 已完成(2026-10-04)
+
+- **轨道版车流智能**(不引库,半天档):js/signals.js 相位真值模块(26 s 周期,坐标哈希错相)一源两用——
+  props.js 灯珠(三色 InstancedMesh + toneMapped:false)与 city.js 车流停车线共用;
+  车流 v2 = IDM-lite 跟车(右侧通行车道绑定,消灭同车道穿插)+ 红灯虚拟前车截停 + 刹车视距自适应前瞻窗。
+  排障记录:① dir=-1 前车索引取反导致反向车道连环锁死(修);② 期望速度按线长换算会让长线车快到闯灯(改固定世界单位档);
+  ③ headless rAF ~5fps 墙钟等不起 26 s 周期 → `window.__njSimTick` 确定性快进;
+  ④ OrbitControls 会把直设的 camera.position 拉回 → `window.__njCam` 走 placeCamera。
+  验收 `npm run traffic:check`:12/12 灯珠半周期翻色、3 路口截停-放行节律、零死锁零页面错误
 
 ## 已完成(2026-10-03)
 

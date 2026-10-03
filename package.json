@@ -9,6 +9,7 @@
     "zifeng:check": "node tools/zifeng-check.mjs",
     "gates:check": "node tools/gates-check.mjs && node tools/zhonghuamen-check.mjs && node tools/wall-structure-check.mjs && node tools/gate-road-check.mjs && node tools/yijiang-road-check.mjs",
     "lighting:check": "node tools/architectural-lighting-check.mjs",
+    "traffic:check": "node tools/traffic-check.mjs",
     "smoke": "npm run check && node tools/smoke.mjs",
     "topdebug": "node tools/debugtop.mjs",
     "serve": "node tools/serve.mjs",

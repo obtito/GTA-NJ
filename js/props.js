@@ -10,6 +10,7 @@ import * as THREE from 'three';
 import { toV2List, makeRandom, hU, vU, distToPolyline } from './geo.js';
 import { RIVER } from './data.js';
 import { registerEnv } from './lib.js';
+import { phaseFor } from './signals.js';
 
 // 水域避让口径与 buildStreetLights 一致：主江道 + 夹江支流
 const RIVER_PTS = toV2List(RIVER.pts);
@@ -128,7 +129,10 @@ export async function buildStreetProps({ centerlines = [], exclusions = [], seed
       const z = q.z + (nAz * (q.wA / 2 + 0.05) + nBz * (q.wB / 2 + 0.05)) * sgn;
       if (inExclusion(x, z) || onWater(x, z)) continue;
       placed.push([x, z]);
-      spots[0].push({ x, z, rot: Math.atan2(q.dAx, q.dAz), s: 0.92 + rand() * 0.16 });
+      // 双灯分工：k=0 面 A 路来车（A 轴相位），k=1 转 B 路切向显 B 轴 —— 灯珠变色据此
+      const axis = k === 0 ? 'a' : 'b';
+      const rot = axis === 'a' ? Math.atan2(q.dAx, q.dAz) : Math.atan2(q.dBx, q.dBz);
+      spots[0].push({ x, z, rot, s: 0.92 + rand() * 0.16, axis, j: q });
     }
   }
 
@@ -217,10 +221,65 @@ export async function buildStreetProps({ centerlines = [], exclusions = [], seed
     count += spots[ti].length;
   }
 
+  /* ---- 5) 红绿灯灯珠（v2 车流智能配套）：三色各一 InstancedMesh，MeshBasic + 逐实例色 ----
+   * 合并 GLB 是单图集单材质，没法逐实例变灯色 —— 灯珠独立成三份小实例悬浮在灯头位置，
+   * toneMapped:false 读作自发光。相位真值在 signals.js，与 city.js 车流停车共用。 */
+  let bulbMeshes = null, bulbStates = null, signalClock = 0;
+  const lightSpots = spots[0];
+  const BULB_NAMES = ['red', 'yellow', 'green'];
+  const ON_COLOR = { red: new THREE.Color(0xff2d1a), yellow: new THREE.Color(0xffb300), green: new THREE.Color(0x1fe36a) };
+  const OFF_COLOR = new THREE.Color(0x16130f);
+  if (lightSpots.length) {
+    const bg = new THREE.SphereGeometry(0.0042, 8, 6);
+    bulbMeshes = {};
+    for (const name of BULB_NAMES) {
+      const im = new THREE.InstancedMesh(bg, new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false }), lightSpots.length);
+      im.frustumCulled = false;
+      im.castShadow = im.receiveShadow = false;   // 灯珠不进阴影链
+      group.add(im);
+      bulbMeshes[name] = im;
+    }
+    const d = new THREE.Object3D();
+    lightSpots.forEach((sp, i) => {
+      const hgt = vU(4.2) * sp.s;                 // 与道具同款目标高（含实例随机比例）
+      const cy = hgt * 0.84;                      // 灯头取杆顶段
+      const fx = Math.sin(sp.rot), fz = Math.cos(sp.rot);
+      const fwd = hgt * 0.11;                     // 灯面沿朝向外抛一点，别埋进杆里
+      for (let k = 0; k < 3; k++) {               // 红上绿下，间隔 0.055h
+        d.position.set(sp.x + fx * fwd, cy + (1 - k) * hgt * 0.055, sp.z + fz * fwd);
+        d.updateMatrix();
+        bulbMeshes[BULB_NAMES[k]].setMatrixAt(i, d.matrix);
+      }
+    });
+    bulbStates = lightSpots.map(() => '');
+    applyBulbs();   // 构造即着色，避免任何一帧以白色（材质本色）灯珠渲染
+  }
+  function applyBulbs() {
+    if (!bulbMeshes) return;
+    let dirty = false;
+    lightSpots.forEach((sp, i) => {
+      const st = phaseFor(sp.j, signalClock)[sp.axis];
+      if (st === bulbStates[i]) return;           // 相位没翻不写色
+      bulbStates[i] = st;
+      for (const name of BULB_NAMES) {
+        bulbMeshes[name].setColorAt(i, name === st ? ON_COLOR[name] : OFF_COLOR);
+      }
+      dirty = true;
+    });
+    if (dirty) for (const name of BULB_NAMES) bulbMeshes[name].instanceColor.needsUpdate = true;
+  }
+
   return {
     group, count, mats,
-    junctions: junctions.length,   // 诊断用：主会话可打印
-    // v1 无自发光材质（红绿灯灯珠 / 橱窗灯留给 v2），占位保接口与路灯一致
-    setNight() {},
+    junctions,          // 完整交点表（含切向/路宽）：main.js 转喂 cars.setSignals 做停车线
+    update(dt) { signalClock += dt; applyBulbs(); },
+    /** 诊断：各灯位当前亮色（traffic-check 断言隔半周期翻色用） */
+    bulbDebug() {
+      return {
+        clock: Math.round(signalClock * 10) / 10,
+        bulbs: lightSpots.map((sp, i) => ({ axis: sp.axis, state: bulbStates[i] })),
+      };
+    },
+    setNight() {},      // 灯珠 toneMapped:false 恒亮，日夜无需调
   };
 }

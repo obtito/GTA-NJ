@@ -4,6 +4,7 @@ import { toV2, toV2List, mY, makeRandom, clamp, pointInPolygon, distToPolyline, 
 import { DISTRICTS, PARKS, RIVER, LAKES, CITY_WALL, ROADS } from './data.js';
 import { mat, loadTexture, makeFacadeTexture, makeWindowTexture, makeRoofTexture, patchMaterial, instancedBoxes, registerEnv } from './lib.js';
 import { terrainHeight } from './world.js';
+import { phaseFor } from './signals.js';
 
 const RIVER_PTS = toV2List(RIVER.pts);
 // 夹江等支流（data.js 里字段是 halfWidth）：路灯避水要连支流一起查
@@ -598,13 +599,28 @@ export function buildStreetLights(centerlines, surfaceAt, seed = 777) {
   };
 }
 
-/* ============ 车流（Kenney CC0 车模实例化；node / 缺资源时回退方块车流） ============ */
+/* ============ 车流（Kenney CC0 车模实例化；node / 缺资源时回退方块车流） ============
+ * v2 车流智能（不引库）：同车道 IDM-lite 跟车（消灭穿插）+ 红绿灯停车线（相位真值在 signals.js，
+ * 与 props.js 灯珠共用）。车道 = (线路, 行进方向)：lane 偏移与 dir 绑定成右侧通行。 */
 export async function buildCars(centerlines, count = 110, seed = 999) {
   const rand = makeRandom(seed);
   const lines = centerlines.filter((l) => l.w > 0.35);   // 主干道（单位与路宽同口径）
   const group = new THREE.Group();
   group.name = 'cars';
   if (!lines.length) return { group, update: () => {}, setNight: () => {} };
+
+  // IDM-lite 参数（场景单位）：车长 0.26 / 最小车距 0.12 / 头时距 1 s / 舒适加减速。
+  // 期望车速用世界单位固定档（0.05-0.13 u/s ≈ 2-5 个车长/秒）——v1 按线长换算会让
+  // 长线车快到 1.5 u/s，刹车距离 6 u 远超红前瞻窗，等于全线闯红灯。
+  const CAR_LEN = 0.26, S_MIN = 0.12, T_HEAD = 1.0, A_MAX = 0.09, B_MAX = 0.18;
+  const SQAB = Math.sqrt(A_MAX * B_MAX);
+  const pickV0 = () => 0.05 + rand() * 0.08;
+  const mod = (a, n) => ((a % n) + n) % n;
+  /** IDM 加速度：gap 到前车（或停车线这类 vObs=0 的虚拟障碍） */
+  const idm = (v, v0, gap, vObs) => {
+    const sStar = S_MIN + Math.max(0, v * T_HEAD + (v - vObs) * v / (2 * SQAB));
+    return A_MAX * (1 - Math.pow(v / v0, 4)) - A_MAX * Math.pow(sStar / Math.max(gap, 0.02), 2);
+  };
 
   // 车模装载：assets.js 必须函数内动态 import（其内部含 three/addons bare specifier，node 顶层解析会炸 smoke）
   let loadMergedGLB = null;
@@ -667,11 +683,8 @@ export async function buildCars(centerlines, count = 110, seed = 999) {
     for (let i = 0; i < count; i++) {
       const li = (rand() * lines.length) | 0;
       const im = meshes[i % models.length];
-      cars.push({
-        li, t: rand(), speed: (0.004 + rand() * 0.012) * (rand() > 0.5 ? 1 : -1),
-        lane: (rand() > 0.5 ? 1 : -1) * 0.22, y: 0.22,
-        mesh: im, idx: im.userData.used++,
-      });
+      const dir = rand() > 0.5 ? 1 : -1;                       // 行进方向 = 车道（右侧通行）
+      cars.push({ li, dir, s: rand() * meta[li].total, v: 0, v0: pickV0(), lane: dir * 0.22, y: 0.22, mesh: im, idx: im.userData.used++ });
     }
     for (const im of meshes) im.count = im.userData.used;
   } else {
@@ -687,11 +700,8 @@ export async function buildCars(centerlines, count = 110, seed = 999) {
     const col = new THREE.Color();
     for (let i = 0; i < count; i++) {
       const li = (rand() * lines.length) | 0;
-      cars.push({
-        li, t: rand(), speed: (0.004 + rand() * 0.012) * (rand() > 0.5 ? 1 : -1),
-        lane: (rand() > 0.5 ? 1 : -1) * 0.22, y: 0.22,
-        mesh, idx: i, box: true,
-      });
+      const dir = rand() > 0.5 ? 1 : -1;
+      cars.push({ li, dir, s: rand() * meta[li].total, v: 0, v0: pickV0(), lane: dir * 0.22, y: 0.22, mesh, idx: i, box: true });
       col.set(palette[(rand() * palette.length) | 0]);
       mesh.setColorAt(i, col);
     }
@@ -715,13 +725,82 @@ export async function buildCars(centerlines, count = 110, seed = 999) {
     return [0, 0, 0];
   }
 
+  /* ---- 信号灯停车线注入（main.js 在 props 构建后调用；不调用则纯跟车无红绿灯） ----
+   * 把每个路口中心投影到每条车行线：垂距 < 本路半宽 + 0.25 视为「本线穿过该口」，
+   * 按切向与 A/B 轴夹角判定本线是路口的哪条路，横向路口的半宽决定停车线退距。 */
+  let signalStops = lines.map(() => []);   // setSignals 未注入（node/smoke）时保持纯跟车
+  let clock = 0;   // 相位时钟：与 props.js 灯珠各自累计，相位偏移本身随机、起点差几帧无感
+  function setSignals(junctions = []) {
+    signalStops = lines.map(() => []);
+    for (const j of junctions) {
+      for (let li = 0; li < lines.length; li++) {
+        const m = meta[li];
+        let acc = 0, best = null;
+        for (let i = 0; i < m.pts.length - 1; i++) {
+          const [ax, az] = m.pts[i], [bx, bz] = m.pts[i + 1];
+          const dx = bx - ax, dz = bz - az, L2 = dx * dx + dz * dz;
+          if (!L2) { acc += m.lens[i]; continue; }
+          const f = ((j.x - ax) * dx + (j.z - az) * dz) / L2;
+          if (f < 0 || f > 1) { acc += m.lens[i]; continue; }
+          const px = ax + dx * f, pz = az + dz * f;
+          const d = Math.hypot(j.x - px, j.z - pz);
+          if (d > lines[li].w / 2 + 0.25) { acc += m.lens[i]; continue; }
+          if (best && d >= best.d) { acc += m.lens[i]; continue; }
+          const ux = dx / Math.sqrt(L2), uz = dz / Math.sqrt(L2);
+          const axis = Math.abs(ux * j.dAx + uz * j.dAz) >= Math.abs(ux * j.dBx + uz * j.dBz) ? 'a' : 'b';
+          best = { d, s: acc + Math.sqrt(L2) * f, axis, j, crossHalf: (axis === 'a' ? j.wB : j.wA) / 2 };
+          acc += m.lens[i];
+        }
+        if (best) signalStops[li].push(best);
+      }
+    }
+    for (const a of signalStops) a.sort((p, q) => p.s - q.s);
+  }
+
   function update(dt, visible = true) {
     if (!visible) return;
+    clock += dt;
+    // 车道分组（li × dir）+ 按弧长排序：前车即序列下一辆（环形跨界缝也成立）
+    const groups = new Map();
+    for (const c of cars) {
+      const k = c.li * 2 + (c.dir > 0 ? 0 : 1);
+      const g = groups.get(k);
+      if (g) g.push(c); else groups.set(k, [c]);
+    }
+    for (const g of groups.values()) {
+      g.sort((p, q) => p.s - q.s);
+      const m = meta[g[0].li], total = m.total, stops = signalStops[g[0].li];
+      for (let i = 0; i < g.length; i++) {
+        const c = g[i];
+        // 跟车：同车道前车。dir=-1 沿弧长递减行驶，前方是排序中的上一个元素——
+        // 取反会让每辆反向车给身后的车刹车，整车道连环锁死（死锁就是这么来的）
+        let acc = A_MAX * (1 - Math.pow(c.v / c.v0, 4));
+        if (g.length > 1) {
+          const lead = g[c.dir > 0 ? (i + 1) % g.length : (i + g.length - 1) % g.length];
+          const gap = mod((lead.s - c.s) * c.dir, total) - CAR_LEN;
+          acc = idm(c.v, c.v0, gap, lead.v);
+        }
+        // 红灯：把停车线当作 vObs=0 的虚拟前车，取更保守的一条。
+        // 前瞻窗 = 当前车速的刹车距离 + 头时距行程 + 余量（车速被封顶后 ≈0.9 u，写死会漏快车）
+        if (stops.length) {
+          const see = Math.max(0.9, (c.v * c.v) / (2 * B_MAX) + c.v * T_HEAD + 0.2);
+          for (const st of stops) {
+            const dist = mod((st.s - c.s) * c.dir, total) - (st.crossHalf + 0.04);
+            if (dist < 0 || dist > see) continue;            // 已过线 / 远超刹车视距不干预
+            const ph = phaseFor(st.j, clock)[st.axis];
+            if (ph === 'green') continue;
+            acc = Math.min(acc, idm(c.v, c.v0, dist, 0));
+          }
+        }
+        c.v = Math.max(0, Math.min(c.v + acc * dt, c.v0 * 1.25));
+        c.s = mod(c.s + c.dir * c.v * dt, total);
+      }
+    }
+    // 矩阵写入（与 v1 相同的摆放逻辑，t 改由弧长换算）
     for (let i = 0; i < cars.length; i++) {
       const c = cars[i];
-      c.t += c.speed * dt;
       const m = meta[c.li];
-      const [x, z, ang] = sample(m, c.t, c.lane);
+      const [x, z, ang] = sample(m, c.s / m.total, c.lane);
       if (c.box) {
         dummy.position.set(x, c.y, z);
         dummy.scale.set(0.11, 0.09, 0.24);
@@ -758,7 +837,52 @@ export async function buildCars(centerlines, count = 110, seed = 999) {
   }
 
   update(0);   // 构造即写好全部矩阵缓冲，避免首帧残留单位矩阵
-  return { group, update, setNight, count, mats: carMatRef ? [carMatRef] : [] };
+  return {
+    group, update, setNight, setSignals, count, mats: carMatRef ? [carMatRef] : [],
+    /** 单路口队列长度（traffic-check 用）：点附近 r 内慢车/停车数——红灯时应涨、绿灯应清零 */
+    queueAt(x, z, r = 0.6) {
+      let q = 0;
+      for (const c of cars) {
+        const m = meta[c.li];
+        const [px, pz] = sample(m, c.s / m.total, c.lane);
+        if (Math.hypot(px - x, pz - z) < r && c.v < c.v0 * 0.3) q++;
+      }
+      return q;
+    },
+    /** 诊断：点附近车的完整状态（li/dir/v/v0/到各停车线的距离与当前相位）——死锁排查用 */
+    debugNear(x, z, r = 0.8) {
+      const out = [];
+      const mod2 = (a, n) => ((a % n) + n) % n;
+      for (const c of cars) {
+        const m = meta[c.li];
+        const [px, pz] = sample(m, c.s / m.total, c.lane);
+        if (Math.hypot(px - x, pz - z) > r) continue;
+        const stops = (signalStops[c.li] || []).map((st) => ({
+          axis: st.axis, phase: phaseFor(st.j, clock)[st.axis],
+          dist: Math.round((mod2((st.s - c.s) * c.dir, m.total) - (st.crossHalf + 0.04)) * 100) / 100,
+        }));
+        out.push({ li: c.li, dir: c.dir, v: Math.round(c.v * 1000) / 1000, v0: Math.round(c.v0 * 1000) / 1000, stops });
+      }
+      return out;
+    },
+    debug() {   // window.__njCars 巡检用：在停的车占比过高说明红灯配时或车距参数失衡
+      let stopped = 0, signals = 0;
+      const perLine = [];   // [线长, 车数, 停车数]：短线过饱和（塞不下）一眼可见
+      for (let li = 0; li < meta.length; li++) perLine.push([Math.round(meta[li].total * 10) / 10, 0, 0]);
+      for (const c of cars) {
+        const st = c.v < c.v0 * 0.15;
+        if (st) stopped++;
+        perLine[c.li][1]++;
+        if (st) perLine[c.li][2]++;
+      }
+      for (const a of signalStops) signals += a.length;
+      return {
+        count: cars.length, stopped, lines: lines.length, signals,
+        clock: Math.round(clock * 10) / 10,
+        perLine: perLine.filter((p) => p[1]).map((p) => p.join('/')).join(' '),
+      };
+    },
+  };
 }
 
 function resampleLine(pts, step) {
