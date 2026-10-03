@@ -1261,7 +1261,10 @@ export const BUILDERS = {
     const lean = (p.towerLean * Math.PI) / 180;
     const headR = footU(6.5);
     const white = mat('#eef1f3', { metal: 0.2, rough: 0.35 });
-    const slant = (vU(p.towerH) - headR) / Math.cos(lean);
+    // 塔根有 0.3 基座抬离(塔根贴水面,不悬水下);竖向总高以「基座 + 塔身 + 顶球」= towerH 为准,
+    // 旧版没扣基座,导致实测顶点 82.5+9=91.5m,对 heightM=82.5 超差 10.9%(smoke WARN)。
+    const towerBase = 0.3;
+    const slant = (vU(p.towerH) - towerBase - headR) / Math.cos(lean);
     const tipY = Math.cos(lean) * slant;
     addBox(g, white, 0, vU(18), 0, footU((p.deckWMin + p.deckWMax) / 2), vU(2.4), L);
     addBox(g, white, 0, vU(18), (L + span) / 4, footU(p.deckWMax * 0.8), vU(2.2), span * 0.5);
@@ -1273,14 +1276,14 @@ export const BUILDERS = {
       head.position.y = slant;
       tower.add(head);
       tower.rotation.z = -sz * lean;
-      tower.position.set(0, 0.3, tz);   // 塔根落到水面附近，而不是悬在水面之下
+      tower.position.set(0, towerBase, tz);   // 塔根落到水面附近，而不是悬在水面之下
       g.add(tower);
       const pts = [];
       const n = 9;
       const tipZ = tz - sz * Math.sin(lean) * slant;
       for (let i = 0; i <= n; i++) {
         const t = i / n;
-        pts.push(new THREE.Vector3(0, tipY, tipZ));
+        pts.push(new THREE.Vector3(0, towerBase + tipY, tipZ));   // 锚在塔顶球心(含基座高)
         pts.push(new THREE.Vector3(0, vU(20.4), tz - sz * (span * 0.5 + t * (L * 0.5 - span * 0.5))));
       }
       const lg = new THREE.BufferGeometry().setFromPoints(pts);
