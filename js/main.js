@@ -12,6 +12,7 @@ import { buildGates, gateRoadLines, gateFrame } from './gates.js';
 import { buildFerry } from './transit.js';
 import { buildStreetProps } from './props.js';
 import { buildMetro } from './metro.js';
+import { buildPedestrians } from './pedestrians.js';
 import { loadGLB } from './assets.js';
 import { createEnvironment } from './environment.js';
 import { createArchitecturalLightPool } from './architectural-lighting.js';
@@ -40,6 +41,7 @@ let architecturalLights;
 let city, trees, cars, roads, waterGroup, gates, walls;
 let lights, ferry;
 let props, metro;
+let peds;
 let env = null;                       // 共享 HDR 环境（PMREM）
 let landmarkItems = [];
 let labelEls = [];
@@ -362,6 +364,11 @@ async function build() {
     props = await buildStreetProps({ centerlines: roads.centerlines, exclusions: lm.exclusions });
     scene.add(props.group);
     console.log(`[GTA-NJ] 街景道具：${props.count} 件`);
+
+    // 行人（Phase 1 轨道式）：主干人行道双侧 + 三处 POI 环绕，走路颠簸
+    peds = buildPedestrians({ centerlines: roads.centerlines, exclusions: lm.exclusions });
+    scene.add(peds.group);
+    console.log(`[GTA-NJ] 行人：${peds.count} 人`);
   }, 88);
 
   await step('装载外部 GLB 资产', async () => {
@@ -1003,6 +1010,7 @@ function loop() {
   }
   if (waterMat) waterMat.uniforms.uTime.value = t;
   if (cars) cars.update(dt, cars.group.visible);
+  if (peds) peds.update(dt);
   if (ferry) ferry.update(dt);
   flushHover();
 
