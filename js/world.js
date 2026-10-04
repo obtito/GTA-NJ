@@ -1,7 +1,7 @@
 // 地形：地面、山体、水面、道路、城墙
 import * as THREE from 'three';
 import { makeMasonryTexture } from './masonry-texture.js';
-import { toV2, toV2List, mY, vU, hU, fbm, noise2, smoothstep as smooth, smoothPolyline, resample, distToPolyline, clamp, M_PER_U_H, M_PER_U_V } from './geo.js';
+import { toV2, toV2List, mY, vU, hU, fbm, noise2, makeRandom, smoothstep as smooth, smoothPolyline, resample, distToPolyline, clamp, M_PER_U_H, M_PER_U_V } from './geo.js';
 import { RIVER, LAKES, ISLANDS, ROADS, MOUNTAINS, CITY_WALL, CITY_GATES, LANDMARKS, gateHalfLenM, roadSection } from './data.js';
 import { WALL_LINE, WALL_CENTER, gateFrame } from './wall-layout.js';
 import { createArchitecturalLighting } from './architectural-lighting.js';
@@ -152,6 +152,195 @@ export function buildMountains() {
     mats.push(material);
   }
   return { group, mats };
+}
+
+/* ==================== 山体林相（紫金山） ====================
+ * 现状山体是渐变顶点色——航拍看是一块绿板。buildMountainForest 给最高那座山
+ * （mountainInfo 按 hU 识别 = 紫金山）撒 ~7 万棵实例树，两种形态混播：
+ *   马尾松 60%：细 cylinder 干 + ConeGeometry 锥冠（深松绿 #2d4a28 系随机明度）
+ *   阔叶   40%：icosahedron 冠（黄绿 #4a6b34 系）
+ * 树高 0.3–0.55u（竖向口径 9–16m），山顶（标高越高）树更矮更稀——风口的贴地矮林。
+ *
+ * 拒绝采样条件（ bounding 椭圆内，rxU/rzU 即山体自身脚印 ）：
+ *   1. 渲染面标高 > 0.35u（确实在山坡上，避开山脚平地城区；低频噪声抖动林线）
+ *   2. 坡度：与 ±6m 邻点高差 < 0.10u（真实约 27°，陡崖不长树；见下方 SLOPE_MAX 注）
+ *   3. 距道路中心线 ≥ 55m（与 buildMountains 的切坡/压平走廊同宽）
+ *   4. 明孝陵神道走廊矩形：|x-75.14| < 0.22u 且 z∈[-6.5,11.5]（铺装+石像生带）
+ *   5. exclusions 楼群/地标排他圆 [x,z,r]（与 buildTrees 同款判定；
+ *      中山陵/明孝陵组群靠调用方传 lm.exclusions 保护，同 buildTrees 惯例）
+ *
+ * 关键：树根标高不用裸 terrainHeight，而是**预烘与 buildMountains 完全同款的
+ * 89×89 顶点高度网格**（含路侧压平 + roadCutHeight 切坡），按 PlaneGeometry 的
+ * 实际三角剖分（对角线 b–d，即 u+v=1）做精确插值。山体网格间距约 79m，而路侧
+ * 压平带只有 55m 宽——切坡边缘的三角形是从路面标高斜上自然地形的长坡，用裸
+ * terrainHeight 放树会在切坡带悬空几十米。
+ *
+ * 密度自适应：先探 2 万样本测接受率，再按 target/rate 定撒点数（封顶 60 万），
+ * 排他圆多寡变化时总数仍稳定在 ~7 万。
+ *
+ * 返回 { group('mountainforest'), count, mats }；castShadow=false（7 万实例不进
+ * shadow pass）、frustumCulled=false（实例矩阵覆盖整山，包围球剔除没意义）。
+ * 合计 3 个 InstancedMesh（干共享一个，松冠/阔叶冠各一），≤4 个 draw call。 */
+export function buildMountainForest({ exclusions = [], seed = 20261005, target = 70000 } = {}) {
+  const group = new THREE.Group();
+  group.name = 'mountainforest';
+  const rand = makeRandom(seed);
+  const zj = mountainInfo.reduce((a, b) => (!a || b.hU > a.hU ? b : a), null);
+  if (!zj) return { group, count: 0, mats: [] };
+
+  /* ---- 渲染面高度网格（与 buildMountains 同 seg/尺寸/压平公式） ---- */
+  const SEG = 88;
+  const sizeX = zj.rxU * 2.4, sizeZ = zj.rzU * 2.4;
+  const stepX = sizeX / SEG, stepZ = sizeZ / SEG;
+  const gx0 = zj.x - sizeX / 2, gz0 = zj.z - sizeZ / 2;
+  const W = SEG + 1;
+  const grid = new Float32Array(W * W);
+  for (let iy = 0; iy <= SEG; iy++) {
+    for (let ix = 0; ix <= SEG; ix++) {
+      const vx = gx0 + ix * stepX, vz = gz0 + iy * stepZ;
+      const raw = terrainHeight(vx, vz);
+      grid[iy * W + ix] = raw > ROAD_Y + 1 && roadDistM(vx, vz) < 55
+        ? ROAD_Y - 0.012
+        : roadCutHeight(raw, vx, vz);
+    }
+  }
+  /** 渲染面上任意点的精确标高：PlaneGeometry(88×88) 三角 (a,b,d)/(b,c,d)，对角线 b–d 即 u+v=1 */
+  function surface(x, z) {
+    const u = clamp((x - gx0) / stepX, 0, SEG - 1e-4);
+    const v = clamp((z - gz0) / stepZ, 0, SEG - 1e-4);
+    const ix = u | 0, iy = v | 0, fu = u - ix, fv = v - iy;
+    const ha = grid[iy * W + ix], hb = grid[(iy + 1) * W + ix];
+    const hd = grid[iy * W + ix + 1], hc = grid[(iy + 1) * W + ix + 1];
+    return fu + fv < 1
+      ? ha + (hb - ha) * fv + (hd - ha) * fu
+      : hc + (hb - hc) * (1 - fu) + (hd - hc) * (1 - fv);
+  }
+
+  /* ---- 道路走廊（与 roadDistM 同几何，AABB 早退：紫金山离主城路网远，逐点全量折线太慢） ---- */
+  const lanes = roadCorridor().map((pts) => {
+    let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+    for (const p of pts) {
+      if (p[0] < x0) x0 = p[0]; if (p[0] > x1) x1 = p[0];
+      if (p[1] < z0) z0 = p[1]; if (p[1] > z1) z1 = p[1];
+    }
+    return { pts, x0, x1, z0, z1 };
+  });
+  const ROAD_KEEP_U = 55 / M_PER_U_H;   // 0.55u = 55m
+  function nearRoad(x, z) {
+    for (const l of lanes) {
+      if (x < l.x0 - ROAD_KEEP_U || x > l.x1 + ROAD_KEEP_U || z < l.z0 - ROAD_KEEP_U || z > l.z1 + ROAD_KEEP_U) continue;
+      if (distToPolyline(x, z, l.pts) < ROAD_KEEP_U) return true;
+    }
+    return false;
+  }
+
+  /* ---- 明孝陵神道走廊（矩形，铺装+石像生带） ---- */
+  const inSpiritWay = (x, z) => Math.abs(x - 75.14) < 0.22 && z >= -6.5 && z <= 11.5;
+  const inExcl = (x, z) => {
+    for (const e of exclusions) {
+      const dx = x - e[0], dz = z - e[1];
+      if (dx * dx + dz * dz < e[2] * e[2]) return true;
+    }
+    return false;
+  };
+
+  const EPS = hU(6);          // ±6m 邻点（水平）
+  // 坡度阈值 0.10u/6m ≈ 真实 27°（换算含 1:30 竖向夸张）。任务书的 0.06u 实测偏严：
+  // 山体基坡（约 0.05u/6m）+ 粗糙噪声就到阈值，中山坡整圈秃成「绿板穹顶」。
+  const SLOPE_MAX = 0.10;
+  const PEAK = zj.hU;
+  const picked = [];
+  function trySample() {
+    const a = rand() * Math.PI * 2, rr = Math.sqrt(rand());
+    const x = zj.x + Math.cos(a) * zj.rxU * rr;
+    const z = zj.z + Math.sin(a) * zj.rzU * rr;
+    const y = surface(x, z);
+    // 山脚林线：0.35u 基准上加低频噪声抖动，避免整圈笔直的等高线式边界
+    if (y <= 0.35 + (noise2(x * 0.25, z * 0.25, 555) - 0.5) * 0.12) return null;
+    if (Math.abs(surface(x + EPS, z) - y) >= SLOPE_MAX || Math.abs(surface(x - EPS, z) - y) >= SLOPE_MAX
+      || Math.abs(surface(x, z + EPS) - y) >= SLOPE_MAX || Math.abs(surface(x, z - EPS) - y) >= SLOPE_MAX) return null;
+    if (nearRoad(x, z) || inSpiritWay(x, z) || inExcl(x, z)) return null;
+    // 山顶更矮更稀：t 加噪声抖动打散等高线圈层，风口矮林不排成同心圆带
+    const t = clamp(y / PEAK + (noise2(x * 0.3, z * 0.3, 999) - 0.5) * 0.35, 0, 1);
+    if (rand() > 1 - 0.55 * t * t) return null;   // 山顶风口更稀
+    return { x, y, z, t, pine: rand() < 0.6 };
+  }
+  // 探针 2 万样本测接受率 → 自适应撒点数；attempts 是**总样本数**，探针命中的样本直接留用
+  const PROBE = 20000;
+  for (let i = 0; i < PROBE; i++) { const s = trySample(); if (s) picked.push(s); }
+  const rate = picked.length / PROBE;
+  const attempts = rate > 1e-4 ? Math.min(Math.round(target / rate), 600000) : 0;
+  for (let i = PROBE; i < attempts; i++) { const s = trySample(); if (s) picked.push(s); }
+
+  const n = picked.length;
+  const mats = [];
+  if (!n) return { group, count: 0, mats };
+
+  /* ---- 几何/材质：干共享一个网格（半径由实例缩放控制），松冠/阔叶冠各一 ---- */
+  const trunkGeo = new THREE.CylinderGeometry(0.7, 1, 1, 6, 1, true).translate(0, 0.5, 0);   // 开口：底埋地里、顶进冠
+  const coneGeo = new THREE.ConeGeometry(1, 1, 6).translate(0, 0.5, 0);                     // 18 tri（侧面 12+底 6）
+  const ballGeo = new THREE.IcosahedronGeometry(1, 0);                                      // 20 tri
+  const trunkMat = new THREE.MeshStandardMaterial({ color: 0x6b5340, roughness: 1 });
+  const pineMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.95, flatShading: true });
+  const broadMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.95, flatShading: true });
+  registerEnv(trunkMat, 0.3);
+  registerEnv(pineMat, 0.42);    // 树冠只要一点点天空补光，太多会发灰（同 buildTrees）
+  registerEnv(broadMat, 0.42);
+  mats.push(trunkMat, pineMat, broadMat);
+
+  const nPine = picked.reduce((s, p) => s + (p.pine ? 1 : 0), 0);
+  const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, n);
+  const pines = new THREE.InstancedMesh(coneGeo, pineMat, nPine);
+  const broads = new THREE.InstancedMesh(ballGeo, broadMat, n - nPine);
+  trunks.name = 'mforest:trunks'; pines.name = 'mforest:pine'; broads.name = 'mforest:broad';
+  for (const m of [trunks, pines, broads]) { m.castShadow = false; m.frustumCulled = false; }
+
+  const dummy = new THREE.Object3D();
+  const col = new THREE.Color();
+  const pineA = new THREE.Color('#2d4a28'), pineB = new THREE.Color('#40603a');
+  const broadA = new THREE.Color('#4a6b34'), broadB = new THREE.Color('#6f8f42');
+  let ti = 0, pi = 0, bi = 0;
+  for (const s of picked) {
+    const hf = 1 - 0.42 * s.t;                       // 山顶更矮（贴地矮林）
+    const H = (0.30 + rand() * 0.25) * hf;           // 0.3–0.55u（9–16m）
+    const yaw = rand() * Math.PI * 2;
+    if (s.pine) {
+      const cr = H * (0.24 + rand() * 0.09);         // 锥冠底半径
+      dummy.position.set(s.x, s.y - 0.01, s.z);
+      dummy.rotation.set(0, yaw, 0);
+      dummy.scale.set(cr * 0.15, H * 0.62, cr * 0.15);   // 细干
+      dummy.updateMatrix();
+      trunks.setMatrixAt(ti++, dummy.matrix);
+      dummy.position.set(s.x, s.y + H * 0.34, s.z);
+      dummy.scale.set(cr, H * (0.58 + rand() * 0.14), cr);
+      dummy.updateMatrix();
+      pines.setMatrixAt(pi, dummy.matrix);
+      col.copy(pineA).lerp(pineB, rand()).multiplyScalar(0.78 + rand() * 0.42);
+      pines.setColorAt(pi++, col);
+    } else {
+      const cr = H * (0.30 + rand() * 0.10);         // 冠半径
+      dummy.position.set(s.x, s.y - 0.01, s.z);
+      dummy.rotation.set(0, yaw, 0);
+      dummy.scale.set(cr * 0.2, H * 0.5, cr * 0.2);
+      dummy.updateMatrix();
+      trunks.setMatrixAt(ti++, dummy.matrix);
+      const tilt = rand() * 0.5 - 0.25;
+      dummy.position.set(s.x, s.y + H * 0.5, s.z);
+      dummy.rotation.set(tilt, yaw, tilt * 0.6);
+      dummy.scale.set(cr, cr * (0.8 + rand() * 0.35), cr);
+      dummy.updateMatrix();
+      broads.setMatrixAt(bi, dummy.matrix);
+      col.copy(broadA).lerp(broadB, rand()).multiplyScalar(0.78 + rand() * 0.42);
+      broads.setColorAt(bi++, col);
+    }
+  }
+  trunks.instanceMatrix.needsUpdate = true;
+  pines.instanceMatrix.needsUpdate = true;
+  broads.instanceMatrix.needsUpdate = true;
+  if (pines.instanceColor) pines.instanceColor.needsUpdate = true;
+  if (broads.instanceColor) broads.instanceColor.needsUpdate = true;
+  group.add(trunks, pines, broads);
+  return { group, count: n, mats };
 }
 
 /* ==================== 水面 ==================== */

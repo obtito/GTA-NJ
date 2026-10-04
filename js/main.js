@@ -4,7 +4,7 @@ import { OrbitControls } from 'three/addons/OrbitControls.js';
 import { Sky } from 'three/addons/Sky.js';
 import {
   buildGround, buildMountains, createWaterMaterial, buildWater,
-  buildRoads, buildWall, terrainHeight,
+  buildMountainForest, buildRoads, buildWall, terrainHeight,
 } from './world.js';
 import { buildCity, buildTrees, buildCars, buildStreetLights, districtGridLines } from './city.js';
 import { buildLandmarks } from './landmarks.js';
@@ -347,6 +347,13 @@ async function build() {
     trees = t.group;
     scene.add(trees);
     aoTargets.wall.push(...t.mats);
+
+    // 紫金山林相（松 60%/阔叶 40%，~7 万实例混交）。exclusions 传「收窄副本」：
+    // 地标排他圆是为挡楼设计的（两陵 r=8u+，直径 1.6km），直传会在山坡上留秃圆；
+    // 山上没有楼群可挡，封顶 3.5u 只护住建筑本体一圈。神道走廊小圆（0.2u 级）不受影响。
+    const forest = buildMountainForest({ exclusions: lm.exclusions.map((e) => [e[0], e[1], Math.min(e[2], 3.5)]) });
+    scene.add(forest.group);
+    console.log(`[GTA-NJ] 紫金山林相：${forest.count} 棵（马尾松 60%/阔叶 40%）`);
 
     cars = await buildCars(roads.centerlines, 120);   // Kenney 车模异步装载(node/失败回退方块)
     scene.add(cars.group);
