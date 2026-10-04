@@ -31,6 +31,26 @@ python -m http.server 8080     # 或任意静态服务器
 
 ---
 
+## 功能现状与路线图
+
+**已交付**(2026-10-05 盘点,详情见 [开发清单](docs/BACKLOG.md)):35 km 城墙真实走向 + 十五门
+1:30 等比逐门建模;22 座地标(tour 37 POI 零错误)——紫峰照片标定、明孝陵全序列
+(下马坊—大金门—四方城—神道六兽+翁仲—御河桥—方城明楼—宝顶,含 CC0 扫描件×5)、
+中山陵全轴;车流 IDM-lite+红绿灯、行人 320 人门控过街、地铁 15 线、轮渡、街景道具;
+紫金山 7 万棵混交林;八套无头验收脚本(check/smoke/tour/gates/lighting/ped/traffic/zifeng)。
+
+**待开发**(摘自 [BACKLOG](docs/BACKLOG.md),按优先级):
+
+1. **逐栋建筑升级**——Overture 真值 9 万栋在盘,把街区体块拆为逐栋实形(近景颗粒度大跳)
+2. **中山陵「自由钟」平面**——台阶两侧弧形绿篱,航拍读出钟形
+3. **望柱云板 / 阴影 4096 + SSAO** 等画质收尾
+4. **行人 Phase 2.5**——换边过街、静态道具避让
+5. **神道扫描件全套替换**——Sketchfab 九件 CC-BY(含明孝陵原位翁仲)待账号手动下载,
+   清单见 [SPIRITWAY_SCAN_LIST](docs/SPIRITWAY_SCAN_LIST.md)
+6. 存档项:Yuka 车流 AI(玩法期)、streets-gl 屋顶形制(先验 OSM 覆盖率)、Pyrosm/OSM2World/3DTiles(按需)
+
+---
+
 ## 目录结构
 
 ```

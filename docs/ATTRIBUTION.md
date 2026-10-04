@@ -31,4 +31,4 @@
 - **CC-BY-NC(非商用)一律不进仓库**
 - 模型统一 GLB、Y-up、米制,Draco 压缩可用(解码器已内置 `assets/draco/gltf/`)
 
-| 南京核心区建筑轮廓(离线审计用) | Overture Maps buildings(2026-09-23.1);混源:OSM 衍生部分 © OpenStreetMap contributors(ODbL)+ zenodo east_asian_buildings(doi:10.5281/zenodo.8174931) | data/nanjing-buildings.json,仅离线审计不分发 |
+| 南京核心区建筑轮廓(离线审计用) | Overture Maps buildings(2026-09-23.1);混源:OSM 衍生部分 © OpenStreetMap contributors(ODbL)+ zenodo east_asian_buildings(doi:10.5281/zenodo.8174931) | 仅本地离线审计,**不随仓库分发**(已在 .gitignore;审计方法见 docs/AUDIT_城市体量真值对照.md) |
