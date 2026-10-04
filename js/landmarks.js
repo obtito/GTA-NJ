@@ -14,7 +14,7 @@
 // 取代原先「LatheGeometry 旋转体」那种一眼假的圆形屋檐。
 
 import * as THREE from 'three';
-import { toV2, toV2List, vU, hU, footU, bearingToRot, makeRandom, clamp } from './geo.js';
+import { toV2, toV2List, vU, hU, footU, bearingToRot, makeRandom, clamp, distToPolyline } from './geo.js';
 import { LANDMARKS, RIVER, CITY_GATES } from './data.js';
 import { UNIT, mat, mergeStaticMeshes, registerEnv } from './lib.js';
 import { terrainHeight } from './world.js';
@@ -1178,6 +1178,45 @@ export const BUILDERS = {
       addBox(g, flagMat, 0, yFlag, sz + footU(9), footU(7), flagH, footU(0.6));
       for (const sx of [-1, 1]) addBox(g, flagMat, sx * footU(13.5), yFlag, sz, footU(0.6), flagH, footU(7));
     }
+    /* ---- 引桥（2026-10-04 衔接优化）：正桥 1 576 m 短于江面斜交宽度，两端悬在水上 ----
+     * 沿桥轴直线延伸双层引桥到岸（data.js 已把过江顶点捻直到轴上）：铁路箱延伸到岸上
+     * 1.2 u 处的隧道洞门，洞后遮蔽段把列车 wrap 全程挡住——此前列车在半空凭空出现/消失；
+     * 公路面板顶 1.05 与正桥同高，压住 world.js 的过江路面带（水面 0.35 + DECK_RISE 0.65
+     * = 1.0 = vU(30)），岸侧带子自然从面板端头落地。墩子水面段落进水下，岸上段落地形。 */
+    const worldAt = (lz) => [ctx.x + Math.sin(g.rotation.y) * lz, ctx.z + Math.cos(g.rotation.y) * lz];
+    const bankDist = (sgn) => {                    // 主桥端 → 出水边（+0.3 u 岸线余量）的轴长
+      for (let d = 0.1; d < 9.5; d += 0.05) {
+        const [wx, wz] = worldAt(sgn * (L / 2 + d));
+        if (distToPolyline(wx, wz, RIVER_PTS) > RIVER.halfWidth + 0.3) return d;
+      }
+      return 6;
+    };
+    const HT_FACE = L / 2 + footU(6) + footU(9);   // 桥头堡外缘（堡体 footU(18) 深，中心 L/2+footU(6)）
+    const portalMat = mat('#9a948a', { rough: 0.95 });
+    const tunnelMat = mat('#211d19', { rough: 1 });
+    const trackEnd = { 1: 0, '-1': 0 };           // 两侧轨面终点（列车行程边界）
+    for (const sgn of [1, -1]) {
+      const bank = bankDist(sgn);
+      const raLen = bank + 0.2;                    // 公路引桥：桥头堡外缘 → 出水边
+      addBox(g, steel, 0, vU(p.deckH), sgn * (HT_FACE + raLen / 2), footU(p.roadW), vU(3), raLen);
+      const railLen = bank + 1.2;                  // 铁路引桥：多走 1.2 u 岸上到洞门
+      addBox(g, concrete, 0, vU(p.deckH - 14), sgn * (HT_FACE + railLen / 2), footU(p.railW), vU(4), railLen);
+      const nPiers = Math.max(1, Math.round(railLen / hU(80)));
+      for (let i = 0; i <= nPiers; i++) {
+        const pz = sgn * (HT_FACE + (railLen / nPiers) * (i + 0.5));
+        const [wx, wz] = worldAt(pz);
+        const overWater = distToPolyline(wx, wz, RIVER_PTS) < RIVER.halfWidth + 0.3;
+        const base = overWater ? -0.12 : terrainHeight(wx, wz) - 0.05;
+        const hP = vU(p.deckH - 14) - base + vU(2);
+        addBox(g, concrete, 0, base + hP / 2, pz, footU(7), hP, footU(7));
+      }
+      // 洞门：混凝土门脸 + 深色塞块（塞块深 0.42 u > 轨面延伸 0.35 u，wrap 点藏在塞块后）
+      const portalZ = HT_FACE + railLen;
+      addBox(g, portalMat, 0, vU(p.deckH - 14) + vU(7), sgn * portalZ, footU(p.railW + 10), vU(15), footU(3));
+      addBox(g, tunnelMat, 0, vU(p.deckH - 14) + vU(6), sgn * (portalZ + 0.21), footU(p.railW + 5), vU(13), 0.42);
+      trackEnd[sgn] = portalZ + 0.35;
+    }
+
     // 桥灯：21 对灯柱保留，42 颗暖白灯球合并为单个 InstancedMesh（夜里 emissive 渐亮）
     const postMat = mat('#e6e9ea', { rough: 0.7 });
     const lampMat = new THREE.MeshStandardMaterial({ color: 0xfff0d0, emissive: 0xffcf82, emissiveIntensity: 0.06, roughness: 0.4 });
@@ -1198,12 +1237,16 @@ export const BUILDERS = {
     }
     g.add(lampMesh);
 
-    /* ---- 下层铁路双线对向列车：铁路面底 vU(deckH-14)、厚 vU(4)，轨面 = vU(deckH-10) + 轨道结构 vU(0.6) ---- */
+    /* ---- 下层铁路双线对向列车：铁路面底 vU(deckH-14)、厚 vU(4)，轨面 = vU(deckH-10) + 轨道结构 vU(0.6) ----
+     * 行程 = 全轨（引桥北端 → 正桥 → 引桥南端，两端各含 0.35 u 洞内遮蔽段）：列车从洞门里
+     * 开出来、进洞消失，wrap 转场全程被塞块挡住。 */
     const RAIL_TOP = vU(p.deckH - 14) + vU(4) + vU(0.6);
+    const Z_MIN = -trackEnd[-1], Z_MAX = trackEnd[1];
+    const RANGE_M = (Z_MAX - Z_MIN) * 100;
     const trainMat = mat('#c8ccd2', { rough: 0.4, metal: 0.3 });
     const winMat = new THREE.MeshStandardMaterial({ color: 0x2a3038, emissive: 0xffe9b0, emissiveIntensity: 0.05 });
     registerEnv(winMat, 0.5);
-    const CARS = 10, CAR_GAP = 27 / p.mainSpan;   // 车间距 27 m 折算成全桥参数
+    const CARS = 10, CAR_GAP = 27 / RANGE_M;   // 车间距 27 m 折算成全行程参数
     const wrap01 = (v) => ((v % 1) + 1) % 1;
     const carDummy = new THREE.Object3D();
     const mkTrainMesh = (material, w, h, len) => {
@@ -1223,7 +1266,7 @@ export const BUILDERS = {
     const placeTrain = (tr) => {
       for (let i = 0; i < CARS; i++) {
         const ti = wrap01(tr.phase - tr.dir * i * CAR_GAP);   // 车头在前，后车按间距 27 m 跟随
-        carDummy.position.set(tr.off, RAIL_TOP, -L / 2 + ti * L);
+        carDummy.position.set(tr.off, RAIL_TOP, Z_MIN + ti * (Z_MAX - Z_MIN));
         carDummy.rotation.set(0, tr.dir < 0 ? Math.PI : 0, 0);
         carDummy.scale.set(tr.body.userData.dims[0], tr.body.userData.dims[1], tr.body.userData.dims[2]);
         carDummy.updateMatrix();
@@ -1239,7 +1282,7 @@ export const BUILDERS = {
     tracks.forEach(placeTrain);           // 构建期先按 t=0 摆好全部初始矩阵
     g.userData.tick = (t, dt) => {
       for (const tr of tracks) {
-        tr.phase = wrap01(tr.phase + dt * 0.016 * tr.dir);    // 全桥 ~62.5 s ≈ 90 km/h，匀速循环
+        tr.phase = wrap01(tr.phase + dt * (0.252 / (Z_MAX - Z_MIN)) * tr.dir);   // 0.252 u/s ≈ 90 km/h，匀速循环
         placeTrain(tr);
       }
     };
