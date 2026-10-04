@@ -37,6 +37,42 @@ const C = {
 
 const M_STONE = () => mat(C.stone, { rough: 0.96 });
 const M_MARBLE = () => mat(C.marble, { rough: 0.92 });
+
+/* 花岗石皮：神道石像生专用（纯色 Standard 在特写下就是塑料感）。
+ * 细颗粒（云母/石英点）+ 风化蚀斑，同源 canvas 兼作 bump；单例缓存保合批。 */
+let graniteMat = null;
+function M_GRANITE() {
+  if (graniteMat) return graniteMat;
+  let tex = null;
+  if (typeof document !== 'undefined') {
+    const cv = document.createElement('canvas'); cv.width = cv.height = 256;
+    const c = cv.getContext('2d');
+    let s = 77;
+    const rnd = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
+    c.fillStyle = '#c6bfb4'; c.fillRect(0, 0, 256, 256);
+    for (let i = 0; i < 2800; i++) {                       // 花岗岩颗粒
+      const v = rnd();
+      c.fillStyle = v > 0.78 ? '#8d867a' : v > 0.52 ? '#dcd6ca' : '#b3ac9f';
+      c.fillRect(rnd() * 256, rnd() * 256, 1.5, 1.5);
+    }
+    for (let i = 0; i < 26; i++) {                         // 风化蚀斑
+      const x = rnd() * 256, y = rnd() * 256, r = 8 + rnd() * 26;
+      const g = c.createRadialGradient(x, y, 1, x, y, r);
+      g.addColorStop(0, 'rgba(118,114,102,0.22)'); g.addColorStop(1, 'rgba(118,114,102,0)');
+      c.fillStyle = g; c.fillRect(x - r, y - r, r * 2, r * 2);
+    }
+    tex = new THREE.CanvasTexture(cv);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.anisotropy = 8;
+  }
+  graniteMat = new THREE.MeshStandardMaterial({
+    color: tex ? 0xffffff : C.stone, roughness: 0.95,
+    map: tex || null, bumpMap: tex, bumpScale: 0.25,
+  });
+  registerEnv(graniteMat, 0.5);
+  return graniteMat;
+}
 const lerp = (a, b, t) => a + (b - a) * t;
 
 /* ---------------- 基础构件（结构/非屋面用，保留） ---------------- */
@@ -150,10 +186,31 @@ function cRoof(w, d, h, color = C.tileGold, type = 'gable-hip', opts = {}) {
   return roof;
 }
 
-/** 一进厅堂（独立 group，总高 = wallH + roofH）；屋顶按形制生成真实翼角/戗脊 */
+/** 一进厅堂（独立 group，总高 = wallH + roofH）；屋顶按形制生成真实翼角/戗脊。
+ *  立面三件套：檐柱圈（朱柱探出墙皮）+ 檐下额枋彩画带 + 柱间槛窗（窗盒+竖棂）。
+ *  ——光板盒墙在特写里就是「糊」的主因，柱框/彩画/窗棂给立面立骨架。 */
 function makeHall(w, d, wallH, roofH, roofColor = C.red, wallColor = C.white, ry = 0, type = 'gable-hip') {
   const grp = new THREE.Group();
   addBox(grp, mat(wallColor, { rough: 0.9 }), 0, 0, 0, w * 0.94, wallH, d * 0.94, ry);
+  const face = (d * 0.94) / 2;
+  const n = Math.max(3, Math.round(w / hU(12)));
+  const colM = mat('#8f2f26', { rough: 0.85 });
+  for (let i = 0; i < n; i++) {
+    const x = -w * 0.44 + (w * 0.88 * i) / (n - 1);
+    for (const sz of [-1, 1]) addCyl(grp, colM, x, 0, sz * (face + footU(0.35)), footU(0.5), wallH, 10);
+  }
+  for (const sz of [-1, 1]) {                                          // 额枋彩画带（青地金缘）+ 檐口压线
+    addBox(grp, mat('#2c5f4f', { rough: 0.8 }), 0, wallH - vU(1.7), sz * (face + footU(0.42)), w * 0.92, vU(1.05), footU(0.8), ry);
+    addBox(grp, mat('#c8a24b', { rough: 0.6 }), 0, wallH - vU(0.6), sz * (face + footU(0.44)), w * 0.92, vU(0.22), footU(0.85), ry);
+  }
+  const winM = mat('#3c3a34', { rough: 0.95 });
+  for (let i = 0; i < n - 1; i++) {                                    // 柱间槛窗：窗盒 + 三竖棂
+    const x0 = -w * 0.44 + (w * 0.88 * i) / (n - 1), x1 = -w * 0.44 + (w * 0.88 * (i + 1)) / (n - 1);
+    const xm = (x0 + x1) / 2, ww = (x1 - x0) * 0.66;
+    addBox(grp, winM, xm, vU(1.1), face + 0.006, ww, wallH - vU(3.2), 0.012, ry);
+    for (let k = -1; k <= 1; k++)
+      addBox(grp, mat('#57534a', { rough: 0.9 }), xm + (k * ww) / 3.2, vU(1.1), face + 0.014, footU(0.35), wallH - vU(3.2), 0.01, ry);
+  }
   const rf = cRoof(w * 1.2, d * 1.2, roofH, roofColor, type);
   rf.position.y = wallH;
   rf.rotation.y = ry;
@@ -959,7 +1016,7 @@ export const BUILDERS = {
     g.add(lmRoof);
     for (let i = 0; i < 5; i++) {
       const x = -lmW * 0.4 + (i / 4) * lmW * 0.8;
-      addBox(g, mat('#3a3a36', { rough: 1 }), x, yLM, zLingMen - lmD / 2 - 0.01, hU(3.2), lmH * 0.5, 0.04);
+      addBox(g, mat('#3a3a36', { rough: 1 }), x, yLM, zLingMen + lmD / 2 + 0.01, hU(3.2), lmH * 0.5, 0.04);
     }
 
     // 碑亭：边长约 12 m，高 17 m，重檐歇山；碑高约 9 m
@@ -997,21 +1054,38 @@ export const BUILDERS = {
     // 祭堂：长 30 m（进深）× 宽 22.5 m（面阔）× 高 26 m，蓝琉璃瓦重檐歇山
     const hW = hU(p.hallW), hD = hU(p.hallL), hH = vU(p.hallH);
     addBox(g, M_MARBLE(), 0, yHall, zTop, hW, hH * 0.58, hD);
-    // 南立面：三座圆拱门（祭堂原型为西式拱券立面）+ 额匾（贴面件探出墙皮，忌埋入墙内）
-    const face = zTop - hD / 2;
+    // 南立面：三座圆拱门（祭堂原型为西式拱券立面）+ 额匾。
+    // 组内 +z=南（博爱坊 zGate=+7.2 为准），门面必须装在南侧——首版 face=zTop−hD/2
+    // 装到了背面，从台阶方向(南)看整个立面是光板。贴面件一律探出南墙皮。
+    const face = zTop + hD / 2;
     const doorM = mat('#2b2b28', { rough: 1 });
     for (const dx of [-hW * 0.27, 0, hW * 0.27]) {
       const dH = hH * 0.4, dW = footU(3.2);
-      addBox(g, doorM, dx, yHall, face - 0.01, dW, dH, 0.04);
+      addBox(g, doorM, dx, yHall, face + 0.01, dW, dH, 0.04);
       const arch = new THREE.Mesh(new THREE.CircleGeometry(dW / 2, 12, 0, Math.PI), doorM);
       arch.position.set(dx, yHall + dH, face + 0.008);     // 半圆拱券脸（朝南）
       g.add(arch);
       addBox(g, mat('#e8e3d6', { rough: 0.7 }), dx, yHall + dH + vU(1.1), face + 0.006, footU(2.2), vU(1.4), 0.012);       // 门额
     }
     addBox(g, mat('#2c4a76', { rough: 0.55 }), 0, yHall + hH * 0.5, face + 0.006, hW * 0.42, vU(2.0), 0.012);             // 「民族民权民生」额匾
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 6; i++) {                          // 南立面壁柱（望柱式分划）
       const x = -hW * 0.42 + (i / 5) * hW * 0.84;
-      addCyl(g, mat('#efe9da', { rough: 0.85 }), x, yHall, zTop - hD / 2 - footU(1), footU(1.7), hH * 0.58, 10);
+      addCyl(g, mat('#efe9da', { rough: 0.85 }), x, yHall, zTop + hD / 2 + footU(1), footU(1.7), hH * 0.58, 10);
+    }
+    // 东西山墙各两樘圆拱窗 + 檐口线脚（花岗石本色，不施彩画——中山陵建筑语汇）
+    {
+      const sideM = mat('#3c3a34', { rough: 0.95 });
+      for (const sx of [-1, 1]) for (let i = 0; i < 2; i++) {
+        const zz = zTop - hD * 0.26 + i * hD * 0.52;
+        const sxc = sx * (hW / 2 + 0.006);
+        addBox(g, sideM, sxc, yHall + hH * 0.14, zz, 0.012, hH * 0.28, footU(2.0));
+        const wa = new THREE.Mesh(new THREE.CircleGeometry(footU(1.0), 10, 0, Math.PI), sideM);
+        wa.position.set(sxc, yHall + hH * 0.14 + hH * 0.28, zz);
+        wa.rotation.y = (sx * Math.PI) / 2;
+        g.add(wa);
+      }
+      for (const [ty, th, tw] of [[hH * 0.6, hH * 0.028, 1.0], [hH * 0.66, hH * 0.022, 0.97]])
+        addBox(g, mat('#efe9da', { rough: 0.8 }), 0, yHall + ty, zTop, hW * tw, th, hD * tw);
     }
     addBox(g, mat('#cfc7b4', { rough: 0.9 }), 0, yHall + hH * 0.58, zTop, hW * 1.05, hH * 0.06, hD * 1.05);
     const hallRoof1 = cRoof(hW * 1.28, hD * 1.25, hH * 0.26, C.tileBlue, 'gable-hip');
@@ -1020,7 +1094,7 @@ export const BUILDERS = {
     const hallRoof2 = cRoof(hW * 1.05, hD * 1.02, hH * 0.32, C.tileBlue, 'gable-hip');
     hallRoof2.position.set(0, yHall + hH * 0.74, zTop);
     g.add(hallRoof2);
-    for (const sx of [-1, 1]) stele(g, M_MARBLE(), sx * hW * 0.72, yHall, zTop - hD / 2 - hU(9), footU(1.0), vU(p.huaBiaoH));
+    for (const sx of [-1, 1]) stele(g, M_MARBLE(), sx * hW * 0.72, yHall, zTop + hD / 2 + hU(9), footU(1.0), vU(p.huaBiaoH));
 
     // 墓室：直径 18 m，高 11 m
     const yTb = groundAt(zTomb) + vU(3);
@@ -1049,7 +1123,7 @@ export const BUILDERS = {
     const zFang = 0;
     const zBao = -hU(210);
 
-    const stone = M_STONE();
+    const stone = M_GRANITE();   // 神道石像生：花岗石皮（颗粒+蚀斑+bump），特写不再是塑料纯色
     // 石兽 6 种各 2 对（两立两卧），自南（狮）而北（马）；两两相对，面朝神道中心。
     // 北端收 12%，给望柱与翁仲段让位（几何构造见 spiritway.js）。
     const halfL = (hU(p.spiritRoadL) / 2) * 0.88;
@@ -1108,6 +1182,14 @@ export const BUILDERS = {
     g.add(bd);
     const yMn = gy(0, zMen);
     addBox(g, mat(C.brick, { rough: 0.95 }), 0, yMn, zMen, hU(34), vU(11), hU(6));
+    {   // 文武方门南立面：五门洞贴面（明孝陵中轴 +z=南）+ 檐口线脚
+      const mf = zMen + hU(3) + 0.01;
+      for (let i = 0; i < 5; i++) {
+        const x = -hU(13) + (i / 4) * hU(26);
+        addBox(g, mat('#2b2b28', { rough: 1 }), x, yMn, mf, hU(3.4), vU(6.5), 0.04);
+      }
+      addBox(g, mat('#9a917e', { rough: 0.85 }), 0, yMn + vU(11) - vU(0.8), mf - 0.004, hU(30), vU(0.9), 0.06);
+    }
     const mnRoof = cRoof(hU(40), hU(9), vU(4.2), C.tileGrey, 'gable-hip');
     mnRoof.position.set(0, yMn + vU(11), zMen);
     g.add(mnRoof);
