@@ -9,6 +9,7 @@
 //   腰带玉佩+层叠甲片+颌须+面部。件数 ~45-60/尊，合批后 32 尊 ~18 万三角，预算内。
 
 import * as THREE from 'three';
+import { registerEnv } from './lib.js';
 
 /* ---------------- 原语工具（米单位 · 投影无光照合批用） ---------------- */
 
@@ -343,4 +344,86 @@ export function addWengZhong(g, material, x, y, z, wen, ry = 0) {
   sub.rotation.y = ry;
   g.add(sub);
   return sub;
+}
+
+/* ---------------- CC0 扫描件替换（main.js「装载外部 GLB 资产」阶段异步调） ----------------
+ * Smithsonian 跪翼守门神兽（北齐响堂山，Draco）与 3dassets.dev Imperial China 守狮对/
+ * 石香炉（KHR_mesh_quantization），全部 CC0，清单与许可见 docs/ATTRIBUTION.md。
+ * GLB 异步而 buildLandmarks 同步：程序化兽先立着，精模到位后按 slot 挂进同位置；
+ * 任一环节失败走 fallback 补程序化兽——神道永不开天窗。 */
+
+/**
+ * @param {THREE.Group} lmGroup  明孝陵组（slots 坐标即组内局部坐标）
+ * @param {object} slots  { lion:{x,z,yW,yE}, qilin:{...}, burner:{x,y,z,ry} }（缺项跳过）
+ * @param {function} fallback  (kind,x,y,z,ry)=>void 程序化兜底
+ */
+export async function dressSpiritWay(lmGroup, slots, fallback) {
+  let loadGLB = null;
+  try { ({ loadGLB } = await import('./assets.js')); } catch { return; }
+  const box = new THREE.Box3();
+  const env = (w) => w.traverse((o) => {
+    if (!o.isMesh) return;
+    for (const mm of (Array.isArray(o.material) ? o.material : [o.material])) {
+      if (mm) registerEnv(mm, 0.5);
+    }
+  });
+  const norm = (unit, targetU) => {                     // 底面中心归原点、总高=targetU
+    box.setFromObject(unit);
+    const h = box.max.y - box.min.y;
+    if (!(h > 0)) return null;
+    const s = targetU / h;
+    unit.scale.multiplyScalar(s);
+    unit.position.set((-(box.min.x + box.max.x) / 2) * s, -box.min.y * s, (-(box.min.z + box.max.z) / 2) * s);
+    const w = new THREE.Group();
+    w.add(unit);
+    return w;
+  };
+  const put = (tpl, x, y, z, ry) => {
+    const c = tpl.clone(true);
+    c.position.set(x, y, z);
+    c.rotation.y = ry;
+    lmGroup.add(c);
+    return c;
+  };
+  const side = (s) => (s > 0 ? -Math.PI / 2 : Math.PI / 2);   // 东西相对，面朝神道中心
+
+  // 守狮对（踏球/抚崽两尊 mesh，各归一后东西各一）
+  if (slots.lion) {
+    const L = slots.lion;
+    let done = false;
+    const lion = await loadGLB('./assets/spiritway/lion-pair.glb').catch(() => null);
+    if (lion) {
+      const units = lion.children.filter((c) => c.isMesh);
+      if (units.length === 2) {
+        done = units.every((u, i) => {
+          const w = norm(u, 2.55 / 30);
+          if (!w) return false;
+          env(w);
+          const sx = i === 0 ? -1 : 1;
+          put(w, sx * L.x, sx < 0 ? L.yW : L.yE, L.z, side(sx));
+          return true;
+        });
+      }
+    }
+    if (!done && fallback) for (const sx of [-1, 1])
+      fallback('lion', sx * L.x, sx < 0 ? L.yW : L.yE, L.z, side(sx), false);
+  }
+  // 跪翼守门神兽（麒麟位；单 mesh 激光扫描）
+  if (slots.qilin) {
+    const Q = slots.qilin;
+    const glb = await loadGLB('./assets/spiritway/winged-guardian.glb').catch(() => null);
+    const w = glb && norm(glb, 2.4 / 30);
+    if (w) {
+      env(w);
+      for (const sx of [-1, 1]) put(w, sx * Q.x, sx < 0 ? Q.yW : Q.yE, Q.z, side(sx));
+    } else if (fallback) for (const sx of [-1, 1])
+      fallback('qilin', sx * Q.x, sx < 0 ? Q.yW : Q.yE, Q.z, side(sx), false);
+  }
+  // 石香炉（享殿台基南缘）
+  if (slots.burner) {
+    const B = slots.burner;
+    const glb = await loadGLB('./assets/spiritway/incense-burner.glb').catch(() => null);
+    const w = glb && norm(glb, 2.8 / 30);
+    if (w) { env(w); put(w, B.x, B.y, B.z, B.ry || 0); }
+  }
 }

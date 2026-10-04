@@ -1146,10 +1146,18 @@ export const BUILDERS = {
       paving.receiveShadow = true;
       g.add(paving);
     }
+    // 立姿狮/麒麟两对由 CC0 扫描件异步替换（spiritway.dressSpiritWay），此处只记槽位；
+    // 卧姿对与加载失败回退仍走程序化——神道永不开天窗。
+    const GLB_KINDS = new Set(['lion', 'qilin']);
+    const spiritSlots = {};
     for (let i = 0; i < p.statuePairs; i++) {
       const zz = zSpirit + halfL - ((i + 0.5) / p.statuePairs) * halfL * 2;
       const kind = SPIRIT_BEASTS[Math.floor(i / 2) % SPIRIT_BEASTS.length];
       const lying = i % 2 === 1;
+      if (!lying && GLB_KINDS.has(kind)) {
+        if (!spiritSlots[kind]) spiritSlots[kind] = { x: hU(14), z: zz, yW: gy(-hU(14), zz), yE: gy(hU(14), zz) };
+        continue;
+      }
       for (const sx of [-1, 1]) {
         addBeast(g, stone, kind, sx * hU(14), gy(sx * hU(14), zz), zz, lying, sx > 0 ? -Math.PI / 2 : Math.PI / 2);
       }
@@ -1231,6 +1239,12 @@ export const BUILDERS = {
       mat('#b3ab98', { rough: 0.97 }));
     ring.position.set(0, yBao - vU(6) + vU(p.baoChengWallH) * 0.5, zBao);
     g.add(ring);
+
+    // 石香炉槽（享殿台基南缘，CC0 扫描件异步落位）+ 精模槽位交接
+    // 台基盒中心 yX−vU(1)、高 vU(hallBaseH+1) → 台面 ≈ yX+vU(1.0)
+    spiritSlots.burner = { x: 0, y: yX + vU(1.0), z: zXiang + hU(10), ry: 0 };
+    g.userData.spiritSlots = spiritSlots;
+    g.userData.spiritFallback = (kind, x, y, z, ry) => addBeast(g, stone, kind, x, y, z, false, ry);
     return g;
   },
 
@@ -1822,6 +1836,9 @@ export function buildLandmarks({ merge = true } = {}) {
       beacon: built && built.userData.beacon,
       tick: built && built.userData.tick,
       setNight: built && built.userData.setNight,
+      // 神道 CC0 精模槽位（明孝陵专有；main.js 装载 GLB 阶段消费）
+      spiritSlots: (built && built.userData.spiritSlots) || null,
+      spiritFallback: (built && built.userData.spiritFallback) || null,
     });
     const ex = exclusionRadius(lm);
     if (ex > 0) exclusions.push([x, z, ex]);

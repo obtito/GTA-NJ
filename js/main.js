@@ -14,6 +14,7 @@ import { buildStreetProps } from './props.js';
 import { buildMetro } from './metro.js';
 import { buildPedestrians } from './pedestrians.js';
 import { loadGLB } from './assets.js';
+import { dressSpiritWay } from './spiritway.js';
 import { createEnvironment } from './environment.js';
 import { createArchitecturalLightPool } from './architectural-lighting.js';
 import { collectOccluders, bakeCityAmbient, applyCityAmbient, setCityAmbientDirect } from './ambient.js';
@@ -375,6 +376,14 @@ async function build() {
   }, 88);
 
   await step('装载外部 GLB 资产', async () => {
+    // 明孝陵神道 CC0 精模：Smithsonian 跪翼守门兽（麒麟位）/守狮对/石香炉替换程序化件。
+    // 必须在首个 applyTime 之前（同下：晚注册材质停在未补偿 base 值）。
+    const mxl = lm.items.find((it) => it.id === 'mingxiaoling');
+    if (mxl?.spiritSlots) {
+      await dressSpiritWay(mxl.group, mxl.spiritSlots, mxl.spiritFallback);
+      console.log('[GTA-NJ] 神道精模：CC0 扫描件（守狮对/翼兽/香炉）已落位');
+    }
+
     // 外部资产管线演示（Draco 压缩 GLB）。场景水平 1:100，真实尺度的车小如指甲，
     // 按车流的视觉语言归一到车长 ≈0.24 单位；等比缩放、不压 Y（城墙同款等比口径）。
     // 注意：此步必须在首个 applyTime 之前 —— setEnvIntensity 有 |Δk|<0.004 早退，
