@@ -1122,6 +1122,66 @@ export const BUILDERS = {
     const zXiang = hU(60);
     const zFang = 0;
     const zBao = -hU(210);
+    // 序列前奏（真实平面是「曲尺」弯道，模型维持直线轴简化）：下马坊—大金门—四方城。
+    const zXiaMa = hU(1650), zDaJin = hU(1430), zSiFang = hU(1220);
+    const zYuHe = hU(290);       // 御河桥（棂星门与文武方门之间的金水河上）
+
+    /* ---- 下马坊：两柱一开间石坊（「诸司官员下马」谕禁碑） ---- */
+    {
+      const y0 = gy(0, zXiaMa);
+      for (const sx of [-1, 1]) {
+        addBox(g, M_GRANITE(), sx * hU(3), y0, zXiaMa, footU(1.6), vU(1), footU(1.6));       // 抱柱基石
+        addBox(g, M_GRANITE(), sx * hU(3), y0 + vU(1), zXiaMa, footU(0.85), vU(6.5), footU(0.85)); // 坊柱
+      }
+      addBox(g, M_GRANITE(), 0, y0 + vU(7.5), zXiaMa, hU(7.6), vU(1.1), footU(1.1));          // 额枋
+      addBox(g, mat('#b6ae9c', { rough: 0.9 }), 0, y0 + vU(6.1), zXiaMa + footU(0.6), hU(4.6), vU(1.5), footU(0.12)); // 谕禁碑匾
+      const xmRoof = cRoof(hU(9), footU(3), vU(1.9), C.tileGrey, 'hip');
+      xmRoof.position.set(0, y0 + vU(8.3), zXiaMa);
+      g.add(xmRoof);
+    }
+
+    /* ---- 大金门：砖券城台门楼（明孝陵正门，三孔券洞单檐歇山） ---- */
+    {
+      const y0 = gy(0, zDaJin);
+      addBox(g, mat(C.brick, { rough: 0.95 }), 0, y0, zDaJin, hU(28), vU(9), hU(12));
+      const djFace = zDaJin + hU(6) + 0.01;                                                   // 南墙皮
+      for (const dx of [-hU(8), 0, hU(8)]) {
+        addBox(g, mat('#2b2b28', { rough: 1 }), dx, y0, djFace, hU(4.4), vU(5.2), 0.04);       // 券洞暗盒
+        const arch = new THREE.Mesh(new THREE.CircleGeometry(hU(2.2), 12, 0, Math.PI), mat('#2b2b28', { rough: 1 }));
+        arch.position.set(dx, y0 + vU(5.2), djFace + 0.008);
+        g.add(arch);
+      }
+      addBox(g, mat('#9a917e', { rough: 0.85 }), 0, y0 + vU(9) - vU(0.7), djFace - 0.004, hU(24), vU(0.8), 0.06); // 檐口线脚
+      const djRoof = cRoof(hU(32), hU(14), vU(3.8), C.tileGrey, 'gable-hip');
+      djRoof.position.set(0, y0 + vU(9), zDaJin);
+      g.add(djRoof);
+    }
+
+    /* ---- 四方城：神功圣德碑碑亭（26 m 见方重檐，内置永乐碑+龟趺） ---- */
+    {
+      const y0 = gy(0, zSiFang);
+      addBox(g, M_GRANITE(), 0, y0, zSiFang, hU(30), vU(1.2), hU(30));                        // 台基
+      addBox(g, mat(C.brick, { rough: 0.95 }), 0, y0 + vU(1.2), zSiFang, hU(24), vU(7.5), hU(24)); // 亭身
+      for (const [px, pz] of [[0, 1], [0, -1], [1, 0], [-1, 0]]) {                             // 四面券洞暗盒
+        const w = px ? 0.04 : hU(4.2), d = pz ? 0.04 : hU(4.2);
+        addBox(g, mat('#2b2b28', { rough: 1 }), px * (hU(12) + 0.01), y0 + vU(1.2), pz * (hU(12) + 0.01), w, vU(4.6), d);
+      }
+      const sfRoof1 = cRoof(hU(27), hU(27), vU(3.4), C.tileGrey, 'hip');
+      sfRoof1.position.set(0, y0 + vU(8.7), zSiFang);
+      g.add(sfRoof1);
+      const sfRoof2 = cRoof(hU(18), hU(18), vU(4.4), C.tileGrey, 'hip');
+      sfRoof2.position.set(0, y0 + vU(11), zSiFang);
+      g.add(sfRoof2);
+      // 内碑（亭身内，南侧券洞可见）：龟趺+碑身+碑首
+      const shell = new THREE.Mesh(new THREE.SphereGeometry(hU(2.6), 12, 8, 0, Math.PI * 2, 0, Math.PI / 2), M_GRANITE());
+      shell.scale.set(1, vU(1.4) / hU(2.6), 1.3);
+      shell.position.set(0, y0 + vU(1.2), zSiFang - hU(1));
+      shell.castShadow = shell.receiveShadow = true;
+      g.add(shell);
+      addBox(g, M_GRANITE(), 0, y0 + vU(1.8), zSiFang + hU(1.4), hU(1.5), vU(1.2), hU(1.4));   // 龟首
+      addBox(g, M_GRANITE(), 0, y0 + vU(2.6), zSiFang, hU(5.6), vU(7.5), hU(1.5));            // 碑身
+      addBox(g, M_GRANITE(), 0, y0 + vU(10.2), zSiFang, hU(6.4), vU(1.8), hU(1.9));           // 碑首
+    }
 
     const stone = M_GRANITE();   // 神道石像生：花岗石皮（颗粒+蚀斑+bump），特写不再是塑料纯色
     // 石兽 6 种各 2 对（两立两卧），自南（狮）而北（马）；两两相对，面朝神道中心。
@@ -1131,7 +1191,7 @@ export const BUILDERS = {
     // （紫金山侧看过来）石像生走廊完全淹没在林海里——铺装就是神道的可读性本身。
     // 贴地形 ribbon：左右边缘逐点采样地形高度，坡地上不悬空；北端铺到方城前。
     {
-      const z0 = zSpirit + halfL + hU(20), z1 = -hU(10), N = 30, w = hU(23);
+      const z0 = hU(1720), z1 = -hU(10), N = 40, w = hU(23);
       const pos = [], idx = [];
       for (let i = 0; i <= N; i++) {
         const zz = z0 + ((z1 - z0) * i) / N;
@@ -1178,6 +1238,18 @@ export const BUILDERS = {
     lxRoof.position.set(0, yLx + vU(8), zLingXing);
     g.add(lxRoof);
 
+    /* ---- 御河桥（金水桥）：神道过金水河的拱桥，CC0 石拱桥 GLB 异步落位 ----
+     * 水带横神道（东西向），铺装带上是桥面；两侧展开的水面让「跨河」成立。 */
+    {
+      const yW = Math.max(gy(-hU(12), zYuHe), gy(hU(12), zYuHe)) - 0.02;
+      const waterMat = new THREE.MeshStandardMaterial({ color: 0x3f5a66, roughness: 0.25, metalness: 0.1, transparent: true, opacity: 0.9 });
+      registerEnv(waterMat, 0.55);
+      const band = new THREE.Mesh(new THREE.PlaneGeometry(hU(150), hU(9)).rotateX(-Math.PI / 2), waterMat);
+      band.position.set(0, yW, zYuHe);
+      band.receiveShadow = true;
+      g.add(band);
+    }
+
     // 文武方门 / 碑殿 / 享殿
     const yX = gy(0, zXiang);
     addBox(g, mat('#c9c2b2', { rough: 0.95 }), 0, yX - vU(1), zXiang, hU(p.hallBaseL), vU(p.hallBaseH + 1), hU(p.hallBaseW));
@@ -1201,6 +1273,32 @@ export const BUILDERS = {
     const mnRoof = cRoof(hU(40), hU(9), vU(4.2), C.tileGrey, 'gable-hip');
     mnRoof.position.set(0, yMn + vU(11), zMen);
     g.add(mnRoof);
+
+    /* ---- 陵宫红墙：文武方门两侧展开，围合 享殿—碑殿—方城 区（朱墙+黄琉璃瓦压顶）。
+     * 南墙正中即文武方门（hU(34) 宽，墙段从门侧接出）；北墙闭合到方城前，
+     * 宝顶自成宝城环（见后），方城以北不归红墙管。 ---- */
+    {
+      const wallMat = mat('#9e3b2c', { rough: 0.92 });
+      const capMat = mat(C.tileGold, { rough: 0.55 });
+      const hW2 = vU(5.5), hT = vU(2), xEnd = hU(90);
+      const zSouth = zMen, zNorth = -hU(215);
+      const seg = (x, z, w, d) => {
+        const y = gy(x, z);
+        addBox(g, wallMat, x, y + hW2 / 2, z, w, hW2, d);
+        addBox(g, capMat, x, y + hW2 + vU(0.35), z, w * 1.15, vU(0.7), d * 1.15);   // 黄瓦压顶
+      };
+      for (const sx of [-1, 1]) seg(sx * (hU(17) + (xEnd - hU(17)) / 2), zSouth, xEnd - hU(17), hT); // 南墙（门两侧）
+      // 东西墙跨 745 m 坡地：单长盒必然一侧悬空——分 6 段逐段贴地形
+      for (const sx of [-1, 1]) for (let i = 0; i < 6; i++) {
+        const za = zSouth + ((zNorth - zSouth) * i) / 6, zb = zSouth + ((zNorth - zSouth) * (i + 1)) / 6;
+        seg(sx * xEnd, (za + zb) / 2, hT, Math.abs(zb - za) * 1.02);
+      }
+      // 北墙同样分段（跨宝城前坡脚）
+      for (let i = 0; i < 4; i++) {
+        const xa = -xEnd + (xEnd * 2 * i) / 4, xb = -xEnd + (xEnd * 2 * (i + 1)) / 4;
+        seg((xa + xb) / 2, zNorth, Math.abs(xb - xa) * 1.02, hT);
+      }
+    }
 
     // 方城
     const yF = gy(0, zFang);
@@ -1240,9 +1338,26 @@ export const BUILDERS = {
     ring.position.set(0, yBao - vU(6) + vU(p.baoChengWallH) * 0.5, zBao);
     g.add(ring);
 
-    // 石香炉槽（享殿台基南缘，CC0 扫描件异步落位）+ 精模槽位交接
+    // 石香炉槽（享殿台基南缘）+ 御河桥槽 + 石栏杆沿台基三边（CC0 扫描件异步落位）
     // 台基盒中心 yX−vU(1)、高 vU(hallBaseH+1) → 台面 ≈ yX+vU(1.0)
     spiritSlots.burner = { x: 0, y: yX + vU(1.0), z: zXiang + hU(10), ry: 0 };
+    spiritSlots.bridge = { x: 0, y: gy(0, zYuHe), z: zYuHe, ry: 0 };
+    {
+      const bL = hU(p.hallBaseL) / 2, bW = hU(p.hallBaseW) / 2, yTop = yX + vU(1.0);
+      // 南面踏道（三级踏步，hU(24) 宽）——栏杆让开这一段
+      const stepH = vU(p.hallBaseH + 1) / 3, stepD = vU(1.4);
+      for (let s = 0; s < 3; s++) {
+        addBox(g, mat('#c2bbb0', { rough: 0.95 }), 0,
+          yX + vU(1.0) - stepH * (s + 0.5),                              // 自台面逐级下降
+          zXiang + bW + stepD * (s + 0.5), hU(24), stepH, stepD);
+      }
+      spiritSlots.balustrade = { y: yTop, edges: [
+        { x0: -bL, z0: zXiang + bW, x1: -hU(12), z1: zXiang + bW },                     // 南缘（踏道两侧）
+        { x0: hU(12), z0: zXiang + bW, x1: bL, z1: zXiang + bW },
+        { x0: -bL, z0: zXiang - bW, x1: -bL, z1: zXiang + bW },                          // 东西缘
+        { x0: bL, z0: zXiang - bW, x1: bL, z1: zXiang + bW },
+      ] };
+    }
     g.userData.spiritSlots = spiritSlots;
     g.userData.spiritFallback = (kind, x, y, z, ry) => addBeast(g, stone, kind, x, y, z, false, ry);
     return g;

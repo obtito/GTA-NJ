@@ -426,4 +426,46 @@ export async function dressSpiritWay(lmGroup, slots, fallback) {
     const w = glb && norm(glb, 2.8 / 30);
     if (w) { env(w); put(w, B.x, B.y, B.z, B.ry || 0); }
   }
+  // 御河桥（神道跨金水河；目标跨径 hU(30)=30 m，沿 X 轴摆放后旋转到位）
+  if (slots.bridge) {
+    const B = slots.bridge;
+    const glb = await loadGLB('./assets/spiritway/arch-bridge.glb').catch(() => null);
+    if (glb) {
+      box.setFromObject(glb);
+      const span = box.max.x - box.min.x;
+      if (span > 0) {
+        const s = (30 / 100) / span;                     // 目标跨径 30 m 的场景尺度
+        glb.scale.multiplyScalar(s);
+        glb.position.set((-(box.min.x + box.max.x) / 2) * s, -box.min.y * s, (-(box.min.z + box.max.z) / 2) * s);
+        const w = new THREE.Group();
+        w.add(glb);
+        env(w);
+        put(w, B.x, B.y, B.z, B.ry || 0);
+      }
+    }
+  }
+  // 石栏杆（沿台基边线逐段排；高 1.2 m 归一，段长按 GLB 自身比例，无缝相接）
+  if (slots.balustrade && slots.balustrade.edges) {
+    const glb = await loadGLB('./assets/spiritway/balustrade.glb').catch(() => null);
+    const tpl = glb && norm(glb, 1.2 / 30);
+    if (tpl) {
+      env(tpl);
+      box.setFromObject(tpl);
+      const segLen = box.max.x - box.min.x;
+      if (segLen > 0) {
+        for (const e of slots.balustrade.edges) {
+          const dx = e.x1 - e.x0, dz = e.z1 - e.z0;
+          const len = Math.hypot(dx, dz);
+          const n = Math.max(1, Math.round(len / segLen));
+          const ry = Math.atan2(dx, dz) - Math.PI / 2;          // GLB 长边沿 +X → 对齐边线方向
+          for (let i = 0; i < n; i++) {
+            const c = tpl.clone(true);
+            c.position.set(e.x0 + (dx * (i + 0.5)) / n, slots.balustrade.y, e.z0 + (dz * (i + 0.5)) / n);
+            c.rotation.y = ry;
+            lmGroup.add(c);
+          }
+        }
+      }
+    }
+  }
 }

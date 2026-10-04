@@ -17,7 +17,8 @@
 | `assets/spiritway/winged-guardian.glb`(跪翼守门神兽,北齐 550-577,北响堂山中窟,F1916.345,神道麒麟位) | [Smithsonian 3D Open Access](https://3d.si.edu/object/3d/3d_package:0dc68216-3651-44c7-99cf-18e5d4d1eb9f)(Freer|Sackler 藏品扫描),取 100k 面 Draco GLB 档 | **CC0**(Smithsonian Open Access,公有领域) | 无需署名,仍致谢 Smithsonian DPO |
 | `assets/spiritway/lion-pair.glb`(守狮对:踏球雄 + 抚崽雌,神道立狮位) | [3dassets.dev Imperial China](https://3dassets.dev/) 「Guardian Lion Pair」(id 36211) | **CC0** | 无需署名 |
 | `assets/spiritway/incense-burner.glb`(石香炉,享殿台基) | [3dassets.dev Imperial China](https://3dassets.dev/) 「Stone Incense Burner」(id 36190) | **CC0** | 无需署名 |
-| `assets/spiritway/balustrade.glb`(石栏杆段,备用于台基缘) | [3dassets.dev Imperial China](https://3dassets.dev/) 「Stone Balustrade Run」(id 36174) | **CC0** | 无需署名 |
+| `assets/spiritway/balustrade.glb`(石栏杆段,享殿台基缘) | [3dassets.dev Imperial China](https://3dassets.dev/) 「Stone Balustrade Run」(id 36174) | **CC0** | 无需署名 |
+| `assets/spiritway/arch-bridge.glb`(御河桥·石拱桥,明孝陵金水河) | [3dassets.dev Imperial China](https://3dassets.dev/) 「Arched Stone Bridge」(id 36169) | **CC0** | 无需署名 |
 
 ## 尺度注记(ferrari.glb)
 
