@@ -21,6 +21,7 @@ import { terrainHeight } from './world.js';
 import { buildZifeng } from './zifeng.js';
 import { buildZhonghuamen } from './zhonghuamen.js';
 import { gateFrame } from './wall-layout.js';
+import { SPIRIT_BEASTS, addBeast, addWengZhong } from './spiritway.js';
 import {
   hipRoof, gableHipRoof, gableRoof, pedestal, chineseHall, storiedPavilion,
 } from './arch.js';
@@ -71,11 +72,13 @@ function addCone(g, material, x, y, z, r, h, seg = 12) {
   return m;
 }
 
-/** 华表 / 石望柱 */
+/** 华表 / 石望柱：六角收分柱身 + 承露盘 + 火珠 */
 function stele(g, material, x, y, z, r, h, ry = 0) {
-  addCyl(g, material, x, y, z, r, h * 0.94, 6, r * 0.85, ry);
-  const cap = new THREE.Mesh(new THREE.SphereGeometry(r * 1.35, 8, 6), material);
-  cap.position.set(x, y + h * 0.94 + r * 0.4, z);
+  addCyl(g, material, x, y, z, r, h * 0.9, 6, r * 0.82, ry);
+  addCyl(g, material, x, y + h * 0.9, z, r * 1.45, r * 0.38, 10);   // 承露盘
+  const cap = new THREE.Mesh(new THREE.SphereGeometry(r * 0.85, 10, 8), material);
+  cap.position.set(x, y + h * 0.9 + r * 0.62, z);                   // 火珠
+  cap.castShadow = true;
   g.add(cap);
   return g;
 }
@@ -909,7 +912,15 @@ export const BUILDERS = {
     const pw = hU(p.gateW), ph = vU(p.gateH);
     const post = M_MARBLE();
     for (const sx of [-pw / 2, -pw / 6, pw / 6, pw / 2]) {
-      addBox(g, post, sx, groundAt(zGate), zGate, footU(1.8), ph, footU(1.8));
+      const inner = Math.abs(sx) < pw / 3;                 // 冲天式：中柱穿檐而出
+      addBox(g, post, sx, groundAt(zGate), zGate, footU(1.8), ph * (inner ? 1.14 : 1.05), footU(1.8));
+      addCyl(g, post, sx, groundAt(zGate), zGate + footU(0.5), footU(1.0), vU(1.3), 8);  // 抱鼓石
+      if (inner) {                                         // 冲天柱头冠
+        const dome = new THREE.Mesh(new THREE.SphereGeometry(footU(1.15), 10, 8), post);
+        dome.position.set(sx, groundAt(zGate) + ph * 1.14, zGate);
+        dome.castShadow = true;
+        g.add(dome);
+      }
     }
     for (const sx of [-pw / 2, pw / 2]) {
       const rf = cRoof(footU(7), footU(6), vU(p.gateH * 0.22), C.tileBlue, 'gable-hip');
@@ -917,6 +928,7 @@ export const BUILDERS = {
       g.add(rf);
     }
     addBox(g, post, 0, groundAt(zGate) + ph * 0.72, zGate, pw * 0.96, vU(1.6), footU(1.4));
+    addBox(g, mat('#2c4a76', { rough: 0.6 }), 0, groundAt(zGate) + ph * 0.72 + vU(1.6), zGate + footU(0.8), pw * 0.3, vU(2.2), footU(0.3));  // 「博爱」匾额
     const gRoof = cRoof(pw * 1.4, footU(6), vU(p.gateH * 0.24), C.tileBlue, 'gable-hip');
     gRoof.position.set(0, groundAt(zGate) + ph, zGate);
     g.add(gRoof);
@@ -955,7 +967,15 @@ export const BUILDERS = {
     const bt = makeHall(hU(p.pavilionW), hU(p.pavilionW), vU(p.pavilionH * 0.55), vU(p.pavilionH * 0.45), C.tileBlue, C.marble, 0, 'gable-hip');
     bt.position.set(0, yBT, zBeiTing);
     g.add(bt);
-    addBox(g, mat('#8f8878', { rough: 0.9 }), 0, yBT + vU(1), zBeiTing, hU(3.4), vU(p.steleH), hU(1.2));
+    const guiMat = mat('#7d7668', { rough: 0.95 });
+    const shell = new THREE.Mesh(new THREE.SphereGeometry(hU(2.0), 14, 8, 0, Math.PI * 2, 0, Math.PI / 2), guiMat);
+    shell.scale.set(1, vU(1.3) / hU(2.0), 1.25);
+    shell.position.set(0, yBT, zBeiTing);
+    shell.castShadow = shell.receiveShadow = true;
+    g.add(shell);                                          // 龟趺（赑屃）背甲
+    addBox(g, guiMat, 0, yBT + vU(0.6), zBeiTing + hU(1.9), hU(1.1), vU(0.9), hU(1.0));   // 昂首
+    addBox(g, guiMat, 0, yBT, zBeiTing - hU(2.1), hU(1.2), vU(0.6), hU(0.8));             // 尾
+    addBox(g, mat('#8f8878', { rough: 0.9 }), 0, yBT + vU(1.2), zBeiTing, hU(3.0), vU(p.steleH), hU(1.1));
 
     // 392 级石阶分 10 段、8 个平台
     const secStart = zBeiTing - hU(30);
@@ -977,6 +997,18 @@ export const BUILDERS = {
     // 祭堂：长 30 m（进深）× 宽 22.5 m（面阔）× 高 26 m，蓝琉璃瓦重檐歇山
     const hW = hU(p.hallW), hD = hU(p.hallL), hH = vU(p.hallH);
     addBox(g, M_MARBLE(), 0, yHall, zTop, hW, hH * 0.58, hD);
+    // 南立面：三座圆拱门（祭堂原型为西式拱券立面）+ 额匾（贴面件探出墙皮，忌埋入墙内）
+    const face = zTop - hD / 2;
+    const doorM = mat('#2b2b28', { rough: 1 });
+    for (const dx of [-hW * 0.27, 0, hW * 0.27]) {
+      const dH = hH * 0.4, dW = footU(3.2);
+      addBox(g, doorM, dx, yHall, face - 0.01, dW, dH, 0.04);
+      const arch = new THREE.Mesh(new THREE.CircleGeometry(dW / 2, 12, 0, Math.PI), doorM);
+      arch.position.set(dx, yHall + dH, face + 0.008);     // 半圆拱券脸（朝南）
+      g.add(arch);
+      addBox(g, mat('#e8e3d6', { rough: 0.7 }), dx, yHall + dH + vU(1.1), face + 0.006, footU(2.2), vU(1.4), 0.012);       // 门额
+    }
+    addBox(g, mat('#2c4a76', { rough: 0.55 }), 0, yHall + hH * 0.5, face + 0.006, hW * 0.42, vU(2.0), 0.012);             // 「民族民权民生」额匾
     for (let i = 0; i < 6; i++) {
       const x = -hW * 0.42 + (i / 5) * hW * 0.84;
       addCyl(g, mat('#efe9da', { rough: 0.85 }), x, yHall, zTop - hD / 2 - footU(1), footU(1.7), hH * 0.58, 10);
@@ -1018,23 +1050,43 @@ export const BUILDERS = {
     const zBao = -hU(210);
 
     const stone = M_STONE();
-    const halfL = hU(p.spiritRoadL) / 2;
+    // 石兽 6 种各 2 对（两立两卧），自南（狮）而北（马）；两两相对，面朝神道中心。
+    // 北端收 12%，给望柱与翁仲段让位（几何构造见 spiritway.js）。
+    const halfL = (hU(p.spiritRoadL) / 2) * 0.88;
+    // 神道石板铺装：山体是一整片渐变绿，没有这条浅色轴线的话，空中俯瞰
+    // （紫金山侧看过来）石像生走廊完全淹没在林海里——铺装就是神道的可读性本身。
+    // 贴地形 ribbon：左右边缘逐点采样地形高度，坡地上不悬空；北端铺到方城前。
+    {
+      const z0 = zSpirit + halfL + hU(20), z1 = -hU(10), N = 30, w = hU(23);
+      const pos = [], idx = [];
+      for (let i = 0; i <= N; i++) {
+        const zz = z0 + ((z1 - z0) * i) / N;
+        pos.push(-w / 2, gy(-w / 2, zz) + 0.015, zz, w / 2, gy(w / 2, zz) + 0.015, zz);
+        if (i) { const a = (i - 1) * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      geo.setIndex(idx);
+      geo.computeVertexNormals();
+      const paving = new THREE.Mesh(geo, mat('#a9a08c', { rough: 0.96 }));
+      paving.receiveShadow = true;
+      g.add(paving);
+    }
     for (let i = 0; i < p.statuePairs; i++) {
       const zz = zSpirit + halfL - ((i + 0.5) / p.statuePairs) * halfL * 2;
+      const kind = SPIRIT_BEASTS[Math.floor(i / 2) % SPIRIT_BEASTS.length];
       const lying = i % 2 === 1;
       for (const sx of [-1, 1]) {
-        const x = sx * hU(14);
-        const yy = gy(x, zz);
-        const bodyH = vU(lying ? 2.2 : 3.6);
-        addBox(g, stone, x, yy, zz, footU(2.6), bodyH, footU(5.4));
-        addBox(g, stone, x + sx * footU(1.6), yy + bodyH * 0.9, zz, footU(1.7), vU(2.2), footU(1.7));
+        addBeast(g, stone, kind, sx * hU(14), gy(sx * hU(14), zz), zz, lying, sx > 0 ? -Math.PI / 2 : Math.PI / 2);
       }
     }
-    for (const sx of [-1, 1]) stele(g, stone, sx * hU(14), gy(sx * hU(14), zLingXing + hU(70)), zLingXing + hU(70), footU(1.1), vU(p.wangZhuH));
+    // 石望柱 1 对 → 翁仲（武将 2 对在前、文臣 2 对在后，均面南）
+    const zWangZhu = hU(475);
+    for (const sx of [-1, 1]) stele(g, stone, sx * hU(14), gy(sx * hU(14), zWangZhu), zWangZhu, footU(1.1), vU(p.wangZhuH));
     for (let i = 0; i < p.wengZhong / 2; i++) {
-      const zz = zLingXing + hU(30) - i * hU(24);
+      const zz = hU(445) - i * hU(30);
       for (const sx of [-1, 1]) {
-        addBox(g, stone, sx * hU(14), gy(sx * hU(14), zz), zz, footU(2.4), vU(p.figureH), footU(4.2));
+        addWengZhong(g, stone, sx * hU(14), gy(sx * hU(14), zz), zz, i >= 2);
       }
     }
     // 棂星门（三间两垣式）歇山灰瓦
@@ -1079,18 +1131,22 @@ export const BUILDERS = {
     // 宝顶 / 宝城
     const yBao = gy(0, zBao);
     const baoR = hU(p.baoDingD) / 2;
+    // 偏暖的橄榄绿：山体是 #4a6b3c→#3b5a30 的冷渐变，同色系的 0x5d7048 在航拍里
+    // 直接融进山坡——宝顶是独龙阜上人为堆填的封土树阵，色调偏黄才读得出「一座圆丘」。
     const mound = new THREE.Mesh(
       new THREE.SphereGeometry(baoR, 40, 12, 0, Math.PI * 2, 0, Math.PI / 2),
-      new THREE.MeshStandardMaterial({ color: 0x5d7048, roughness: 1 }),
+      new THREE.MeshStandardMaterial({ color: 0x7d8b4f, roughness: 1 }),
     );
     mound.scale.set(1, vU(30) / baoR, 1);
     // 下沉 6 m：宝顶是 400 m 宽的穹顶，坡地上逐点锚定必然一侧悬空——
     // 下沉让上坡侧多埋（不可见）、下坡侧贴住地面
     mound.position.set(0, yBao - vU(6), zBao);
     mound.receiveShadow = true;
+    mound.castShadow = true;   // 30 m 高的封土丘投影帮它在山体上读出立体
     g.add(mound);
+    // 宝城墙：石色提亮一档，环丘一圈的 readout 主要靠它
     const ring = new THREE.Mesh(new THREE.TorusGeometry(baoR * 0.99, vU(p.baoChengWallH) * 0.5, 6, 60).rotateX(Math.PI / 2),
-      mat('#9b9483', { rough: 0.97 }));
+      mat('#b3ab98', { rough: 0.97 }));
     ring.position.set(0, yBao - vU(6) + vU(p.baoChengWallH) * 0.5, zBao);
     g.add(ring);
     return g;
@@ -1695,6 +1751,14 @@ export function buildLandmarks({ merge = true } = {}) {
       const half = spanL / 2 + (isEye ? 2.6 : 1.2);
       for (let zz = -half; zz <= half; zz += 1.4) {
         exclusions.push([x + Math.sin(rot) * zz, z + Math.cos(rot) * zz, 1.5]);
+      }
+    }
+    // 明孝陵神道走廊：石像生沿轴铺到组原点以北 10.8u，远超 8.2u 的圆心保护圈——
+    // 沿轴布小排他圆（同 trussbridge 手法），树心不再落进铺装/雕像带。
+    if (lm.model === 'tomb') {
+      const half = (hU(800) / 2) * 0.88;
+      for (let zz = hU(310); zz <= hU(760) + half + hU(25); zz += 0.15) {
+        exclusions.push([x, z + zz, hU(20)]);
       }
     }
   }
