@@ -23,7 +23,7 @@
 [设计师说明](https://www.smithgill.com/work/zifeng_tower/)明确三角平面、两片互锁体量、竖横接缝、斜置错位玻璃和裙房花园。
 该页的 458 m 属于与竣工资料不同的设计口径，本模型采用 CTBUH 的 450 m。
 
-本地有效照片为 `ref/ref-Nanjing-Zifeng-Tower.jpg` 和 `ref/ref-Greenland-Financial-Center,-Nanjing.jpg`。
+本地有效照片为 `ref/` 目录两张紫峰照(该目录仅本地保留、不随仓库分发,照片许可未逐张核实)。
 前者有透视和底部裁切，不能直接把每一像素当等距标尺。部分其他本地参考照片有灰色损坏区，未用作全塔高度标定。
 
 ## 本轮修正
