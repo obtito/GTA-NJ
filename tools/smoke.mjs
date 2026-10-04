@@ -138,6 +138,35 @@ cars.update(0.016, true);
 cars.setNight(1);              // 车灯分支：头灯带/尾灯带 emissiveIntensity 也要跑到
 report('车流', cars.group);
 
+// 行人 Phase 2（红绿灯门控）：junctions 来自 props（node 下 GLB 缺失，但路口几何在装载前已算好）。
+// 行人步速 ~0.035 u/s，30s 只走 1u 到不了门——跑 300 sim-s（6000 tick）统计三态峰值才有意义。
+let hardFail = 0;   // 行人块的断言是硬门槛（其他块的 '!!' 多为观察性）：退化必须让退出码非 0 才接得了 CI
+{
+  const pm = await import('../js/props.js');
+  const props = await pm.buildStreetProps({ centerlines: roads.centerlines, exclusions: lm.exclusions });
+  const pd = await import('../js/pedestrians.js');
+  const peds = pd.buildPedestrians({ centerlines: roads.centerlines, exclusions: lm.exclusions });
+  peds.setSignals(props.junctions);
+  let maxWait = 0, maxCross = 0, maxViol = 0;
+  for (let k = 0; k < 6000; k++) {
+    peds.update(0.05);
+    if ((k & 15) === 0) {   // 每 0.8s 采样一次足够抓峰值（三态停留都 ≥ 数秒）
+      const d = peds.debug();
+      if (d.waiting > maxWait) maxWait = d.waiting;
+      if (d.crossing > maxCross) maxCross = d.crossing;
+      if (peds.violations() > maxViol) maxViol = peds.violations();
+    }
+  }
+  report('行人', peds.group);
+  const fin = peds.debug();
+  console.log(`行人门控：${fin.linePeds} 线上人 / ${fin.gates} 门 / 300s 峰值 waiting=${maxWait} crossing=${maxCross} violations=${maxViol}`);
+  if (!fin.gates) { console.log('!! 行人门控为 0：junctions 没接上（props 侧路口求交空转？）'); hardFail++; }
+  else if (maxWait === 0) { console.log('!! 300s 内无人等灯：门控未生效'); hardFail++; }
+  else if (maxCross === 0) { console.log('!! 300s 内无人过街：放行判据永不满足（死锁）'); hardFail++; }
+  if (fin.nan) { console.log('!! 行人坐标 NaN：' + fin.nan); hardFail++; }
+  if (maxViol > 0) { console.log('!! 安全不变量失守：绿灯期穿越走廊 ' + maxViol + ' 人次'); hardFail++; }
+}
+
 // 主干道路灯（GTA-WH 夜景移植）：实例规模 + 夜间分支回归。
 // 阈值 w>=0.35 全部 13 条主干入选；跨江/夹江段按 distToPolyline 跳过。
 const lights = c.buildStreetLights(roads.centerlines, roads.surfaceAt);
@@ -177,3 +206,4 @@ else {
 }
 
 console.log('=== 通过 ===');
+process.exit(hardFail ? 1 : 0);   // 行人门控等硬门槛失守时以非 0 退出（tour 同款，可接 CI）

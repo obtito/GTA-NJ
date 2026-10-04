@@ -758,8 +758,8 @@ export async function buildCars(centerlines, count = 110, seed = 999) {
   }
 
   function update(dt, visible = true) {
-    if (!visible) return;
-    clock += dt;
+    clock += dt;   // 相位钟无条件推进：图层隐藏只冻物理不冻相位——否则关开车流图层会让
+    if (!visible) return;   // 车/灯珠/行人三钟永久漂移（绿珠车停/红珠车走，行人放行窗口也随之失配）
     // 车道分组（li × dir）+ 按弧长排序：前车即序列下一辆（环形跨界缝也成立）
     const groups = new Map();
     for (const c of cars) {
@@ -781,11 +781,13 @@ export async function buildCars(centerlines, count = 110, seed = 999) {
           acc = idm(c.v, c.v0, gap, lead.v);
         }
         // 红灯：把停车线当作 vObs=0 的虚拟前车，取更保守的一条。
-        // 前瞻窗 = 当前车速的刹车距离 + 头时距行程 + 余量（车速被封顶后 ≈0.9 u，写死会漏快车）
+        // 前瞻窗 = 当前车速的刹车距离 + 头时距行程 + 余量（车速被封顶后 ≈0.9 u，写死会漏快车）。
+        // 停车线在口心前 crossHalf+0.15：IDM 静止车头停在 crossHalf+0.155，让清行人过街线
+        // （人行道带 crossHalf+0.09~0.12 + 推挤 0.01）——0.04 会让整条过街带正压在排队头车车体上
         if (stops.length) {
           const see = Math.max(0.9, (c.v * c.v) / (2 * B_MAX) + c.v * T_HEAD + 0.2);
           for (const st of stops) {
-            const dist = mod((st.s - c.s) * c.dir, total) - (st.crossHalf + 0.04);
+            const dist = mod((st.s - c.s) * c.dir, total) - (st.crossHalf + 0.15);
             if (dist < 0 || dist > see) continue;            // 已过线 / 远超刹车视距不干预
             const ph = phaseFor(st.j, clock)[st.axis];
             if (ph === 'green') continue;

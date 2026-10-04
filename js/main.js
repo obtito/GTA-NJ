@@ -367,10 +367,11 @@ async function build() {
     // 车流智能：红绿灯交点表转喂车流做停车线（灯珠变色在 props.update，相位同源）
     cars.setSignals?.(props.junctions);
 
-    // 行人（Phase 1 轨道式）：主干人行道双侧 + 三处 POI 环绕，走路颠簸
+    // 行人（Phase 2 门控）：主干人行道双侧 + 三处 POI 环绕 + 红绿灯停步/过街
     peds = buildPedestrians({ centerlines: roads.centerlines, exclusions: lm.exclusions });
+    peds.setSignals?.(props.junctions);   // 门控注入（与 cars.setSignals 相邻同款；不注入则退回 Phase 1 行为）
     scene.add(peds.group);
-    console.log(`[GTA-NJ] 行人：${peds.count} 人`);
+    console.log(`[GTA-NJ] 行人：${peds.count} 人（信号门 ${peds.debug().gates} 处）`);
   }, 88);
 
   await step('装载外部 GLB 资产', async () => {
@@ -1106,14 +1107,15 @@ function loop() {
   window.__njCars = cars;   // 巡检:车流智能对象(debug 聚合统计 / queueAt 单路口队列)
   window.__njSignals = () => props?.junctions || [];   // 巡检:信号路口坐标表(traffic-check 取景用)
   window.__njBulbs = () => props?.bulbDebug();         // 巡检:灯珠亮色(traffic-check 断言翻色用)
+  window.__njPeds = peds;                              // 巡检:行人门控(debug 三态计数 / violations 安全不变量)
   // 无头取景入口:直接 set camera.position 会被 OrbitControls 的内部球坐标每帧拉回,
   // 必须走 placeCamera(同步写 controls.target)。shot/traffic-check 共用。
   window.__njCam = (x, y, z, dist, polarDeg, azimuthDeg = 40) =>
     placeCamera(new THREE.Vector3(x, y, z), dist, polarDeg, azimuthDeg * Math.PI / 180);
-  // 无头验收用确定性快进:车流物理与灯珠相位同 tick 推进(headless rAF 只有 ~5fps,墙钟等不起 26s 周期)
+  // 无头验收用确定性快进:车流物理/灯珠相位/行人门控同 tick 推进(headless rAF 只有 ~5fps,墙钟等不起 26s 周期)
   window.__njSimTick = (secs, step = 0.05) => {
     let n = Math.round(secs / step);
-    while (n--) { cars?.update(step, true); props?.update?.(step); }
+    while (n--) { cars?.update(step, true); props?.update?.(step); peds?.update?.(step); }
   };
   window.__njTour = {
     ready: true,
